@@ -13,12 +13,15 @@ const notificationRoutes = require('./routes/notificationRoutes');
 const classScheduleRoutes = require('./routes/classScheduleRoutes');
 const teacherPortalRoutes = require('./routes/teacherPortalRoutes');
 const childLinkRoutes = require('./routes/childLinkRoutes');
+const profileRoutes = require('./routes/profileRoutes');
+const bulkAccountRoutes = require('./routes/bulkAccountRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(express.json());
+// 1mb so a resized profile photo (sent as base64) fits in the request body.
+app.use(express.json({ limit: '1mb' }));
 
 app.get('/', (req, res) => {
   res.json({
@@ -29,11 +32,13 @@ app.get('/', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/parent', parentRoutes);
+app.use('/api/admin/bulk-accounts', bulkAccountRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/admin/class-schedules', classScheduleRoutes);
 app.use('/api/teacher', teacherPortalRoutes);
 app.use('/api/child-links', childLinkRoutes);
+app.use('/api/profile', profileRoutes);
 app.use('/api', registrationRoutes);
 
 module.exports = app;

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/api_service.dart';
+import '../utils/manila_time.dart';
 import '../widgets/app_ui.dart';
 
 class ChildAttendanceScreen extends StatefulWidget {
@@ -53,42 +54,12 @@ class _ChildAttendanceScreenState extends State<ChildAttendanceScreen> {
     }
   }
 
-  String _formatTime(String? timeStr) {
-    if (timeStr == null) return '--';
-    try {
-      final dt = DateTime.parse(timeStr).toLocal();
-      final hour = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
-      final minute = dt.minute.toString().padLeft(2, '0');
-      final period = dt.hour >= 12 ? 'PM' : 'AM';
-      return '$hour:$minute $period';
-    } catch (_) {
-      return '--';
-    }
-  }
+  // The server sends Manila time (for example 2026-10-18T22:59:00). It is
+  // shown as it is, on any device and in any browser time zone.
+  String _formatTime(dynamic value) => ManilaTime.time(value, fallback: '--');
 
-  String _formatDate(String? dateStr) {
-    if (dateStr == null) return '--';
-    try {
-      final dt = DateTime.parse(dateStr);
-      const months = [
-        'Jan',
-        'Feb',
-        'Mar',
-        'Apr',
-        'May',
-        'Jun',
-        'Jul',
-        'Aug',
-        'Sep',
-        'Oct',
-        'Nov',
-        'Dec',
-      ];
-      return '${months[dt.month - 1]} ${dt.day}, ${dt.year}';
-    } catch (_) {
-      return '--';
-    }
-  }
+  String _formatDate(dynamic value) =>
+      ManilaTime.shortDate(value, fallback: '--');
 
   Color _getStatusColor(String? status) {
     switch (status?.toLowerCase()) {
@@ -174,17 +145,6 @@ class _ChildAttendanceScreenState extends State<ChildAttendanceScreen> {
                                     ),
                                   ],
                                 ),
-                                if (record['class_subject'] != null) ...[
-                                  const SizedBox(height: 5),
-                                  Text(
-                                    record['class_subject'].toString(),
-                                    style: TextStyle(
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.primary,
-                                    ),
-                                  ),
-                                ],
                                 const SizedBox(height: 14),
                                 Row(
                                   children: [

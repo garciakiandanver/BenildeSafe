@@ -26,6 +26,13 @@ const login = async (req, res) => {
         u.email_verified,
         u.password_hash,
         r.name AS role,
+        u.profile_photo,
+        u.must_change_password,
+        COALESCE(
+          NULLIF(BTRIM(s.first_name), ''),
+          NULLIF(BTRIM(t.first_name), ''),
+          NULLIF(BTRIM(p.first_name), '')
+        ) AS first_name,
         COALESCE(
           NULLIF(BTRIM(CONCAT_WS(
             ' ',
@@ -107,7 +114,10 @@ const login = async (req, res) => {
         id: user.id,
         email: user.email,
         role: user.role,
-        full_name: user.full_name
+        full_name: user.full_name,
+        first_name: user.first_name,
+        profile_photo: user.profile_photo,
+        must_change_password: user.must_change_password === true
       }
     });
 
@@ -259,7 +269,10 @@ const resetPassword = async (req, res) => {
 
     const passwordHash = await bcrypt.hash(password, 10);
     await client.query(
-      'UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+      `UPDATE users
+       SET password_hash = $1, must_change_password = FALSE,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $2`,
       [passwordHash, reset.id]
     );
     await client.query(
@@ -322,7 +335,10 @@ const changePassword = async (req, res) => {
 
     const passwordHash = await bcrypt.hash(newPassword, 10);
     await pool.query(
-      'UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+      `UPDATE users
+       SET password_hash = $1, must_change_password = FALSE,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $2`,
       [passwordHash, req.user.userId]
     );
 

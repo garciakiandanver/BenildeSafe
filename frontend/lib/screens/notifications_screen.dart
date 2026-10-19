@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import '../services/api_service.dart';
 import '../widgets/date_filter_bar.dart';
+import '../utils/manila_time.dart';
 
 class NotificationButton extends StatefulWidget {
   final String token;
@@ -122,6 +123,23 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     _loadNotifications();
   }
 
+  // Shows the whole notification in a large, easy-to-read pop-up (for every
+  // role). It is marked as read when the pop-up is closed (with Close, the X,
+  // or by tapping outside).
+  Future<void> _openNotification(Map<String, dynamic> notification) async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) => _NotificationDialog(
+        title: notification['title']?.toString() ?? '',
+        message: notification['message']?.toString() ?? '',
+        date: _formatCreatedAt(notification['created_at']),
+        isUnread: notification['read_at'] == null,
+      ),
+    );
+    if (!mounted) return;
+    await _markRead(notification);
+  }
+
   Future<void> _loadNotifications() async {
     try {
       final result = await ApiService.getNotifications(token: widget.token);
@@ -196,17 +214,13 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     'Dec',
   ];
 
-  // Example: "Sunday, Oct 4, 2026 • 1:24 AM"
+  // Example: "Sunday, Oct 4, 2026 • 1:24 AM" (always Manila time)
   String _formatCreatedAt(dynamic value) {
-    final date = DateTime.tryParse(value?.toString() ?? '');
+    final date = ManilaTime.parse(value);
     if (date == null) return '';
-    final localDate = date.toLocal();
-    final hour = localDate.hour % 12 == 0 ? 12 : localDate.hour % 12;
-    final minute = localDate.minute.toString().padLeft(2, '0');
-    final period = localDate.hour < 12 ? 'AM' : 'PM';
-    final weekday = _weekdayNames[localDate.weekday - 1];
-    final month = _monthNames[localDate.month - 1];
-    return '$weekday, $month ${localDate.day}, ${localDate.year} • $hour:$minute $period';
+    final weekday = _weekdayNames[date.weekday - 1];
+    final month = _monthNames[date.month - 1];
+    return '$weekday, $month ${date.day}, ${date.year} • ${ManilaTime.clock(date)}';
   }
 
   DateFilter _filter = const DateFilter();
@@ -216,7 +230,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       .map((item) => Map<String, dynamic>.from(item as Map))
       .where(
         (item) => _filter.matches(
-          DateTime.tryParse(item['created_at']?.toString() ?? ''),
+          ManilaTime.parse(item['created_at']),
         ),
       )
       .toList();
@@ -308,6 +322,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                                   title: Text(
                                     notification['title']?.toString() ?? '',
                                     style: TextStyle(
+                                      fontSize: 19,
                                       fontWeight: isUnread
                                           ? FontWeight.bold
                                           : FontWeight.normal,
@@ -321,6 +336,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                                       Text(
                                         notification['message']?.toString() ??
                                             '',
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(fontSize: 17),
                                       ),
                                       const SizedBox(height: 6),
                                       Text(
@@ -329,11 +347,22 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                                         ),
                                         style: Theme.of(
                                           context,
-                                        ).textTheme.bodySmall,
+                                        ).textTheme.bodyMedium,
+                                      ),
+                                      const SizedBox(height: 6),
+                                      Text(
+                                        'Tap to read',
+                                        style: TextStyle(
+                                          fontSize: 15,
+                                          fontWeight: FontWeight.w700,
+                                          color: Theme.of(
+                                            context,
+                                          ).colorScheme.primary,
+                                        ),
                                       ),
                                     ],
                                   ),
-                                  onTap: () => _markRead(notification),
+                                  onTap: () => _openNotification(notification),
                                 ),
                               );
                             },
@@ -342,6 +371,131 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                 ),
               ],
             ),
+    );
+  }
+}
+
+/// Large-print pop-up for reading one notification (made for parents).
+class _NotificationDialog extends StatelessWidget {
+  final String title;
+  final String message;
+  final String date;
+  final bool isUnread;
+
+  const _NotificationDialog({
+    required this.title,
+    required this.message,
+    required this.date,
+    required this.isUnread,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final maxHeight = MediaQuery.of(context).size.height * 0.85;
+
+    return Dialog(
+      insetPadding: const EdgeInsets.all(16),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxWidth: 560, maxHeight: maxHeight),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 20, 12, 22),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Icon(
+                      Icons.notifications_active_outlined,
+                      size: 32,
+                      color: theme.colorScheme.primary,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(
+                        title,
+                        style: const TextStyle(
+                          fontSize: 25,
+                          fontWeight: FontWeight.w800,
+                          height: 1.25,
+                        ),
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Close',
+                    iconSize: 32,
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ],
+              ),
+              if (date.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Padding(
+                  padding: const EdgeInsets.only(right: 12),
+                  child: Text(
+                    date,
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ],
+              const Divider(height: 28),
+              Flexible(
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 12),
+                  child: SingleChildScrollView(
+                    child: Text(
+                      message,
+                      style: const TextStyle(fontSize: 22, height: 1.55),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 20),
+              Padding(
+                padding: const EdgeInsets.only(right: 12),
+                child: FilledButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size.fromHeight(58),
+                  ),
+                  child: const Text(
+                    'Close',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+                  ),
+                ),
+              ),
+              if (isUnread) ...[
+                const SizedBox(height: 10),
+                Center(
+                  child: Padding(
+                    padding: const EdgeInsets.only(right: 12),
+                    child: Text(
+                      'Closing this marks it as read.',
+                      style: TextStyle(
+                        fontSize: 15,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

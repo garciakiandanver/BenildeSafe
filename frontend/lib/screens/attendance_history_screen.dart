@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../services/api_service.dart';
 import '../widgets/app_ui.dart';
 import '../widgets/date_filter_bar.dart';
+import '../utils/manila_time.dart';
 
 class AttendanceHistoryScreen extends StatefulWidget {
   final String token;
@@ -55,59 +56,21 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
       .map((record) => Map<String, dynamic>.from(record as Map))
       .where(
         (record) => _filter.matches(
-          DateTime.tryParse(record['attendance_date']?.toString() ?? ''),
+          ManilaTime.parse(record['attendance_date']),
         ),
       )
       .toList();
 
-  String _formatDate(String? value) {
-    if (value == null || value.isEmpty) {
-      return 'N/A';
-    }
+  String _formatDate(String? value) => ManilaTime.longDate(
+    value,
+    fallback: value == null || value.isEmpty ? 'N/A' : value,
+  );
 
-    final date = DateTime.tryParse(value)?.toLocal();
-
-    if (date == null) {
-      return value;
-    }
-
-    const months = [
-      'January',
-      'February',
-      'March',
-      'April',
-      'May',
-      'June',
-      'July',
-      'August',
-      'September',
-      'October',
-      'November',
-      'December',
-    ];
-
-    return '${months[date.month - 1]} ${date.day}, ${date.year}';
-  }
-
-  String _formatTime(String? value) {
-    if (value == null || value.isEmpty) {
-      return 'N/A';
-    }
-
-    final date = DateTime.tryParse(value)?.toLocal();
-
-    if (date == null) {
-      return value;
-    }
-
-    final hour = date.hour % 12 == 0 ? 12 : date.hour % 12;
-
-    final minute = date.minute.toString().padLeft(2, '0');
-
-    final period = date.hour >= 12 ? 'PM' : 'AM';
-
-    return '$hour:$minute $period';
-  }
+  // Time in / time out are always shown in Manila time.
+  String _formatTime(String? value) => ManilaTime.time(
+    value,
+    fallback: value == null || value.isEmpty ? 'N/A' : value,
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -198,15 +161,6 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
                       StatusBadge(label: status),
                     ],
                   ),
-                  if (record['class_subject'] != null) ...[
-                    const SizedBox(height: 6),
-                    Text(
-                      record['class_subject'].toString(),
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
                   const SizedBox(height: 14),
                   Row(
                     children: [

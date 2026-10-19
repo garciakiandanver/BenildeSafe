@@ -88,15 +88,17 @@ const getChildAttendance = async (req, res) => {
     `
     SELECT
         a.id,
-        a.attendance_date,
-        a.time_in,
-        a.time_out,
+        -- Dates and times are sent as plain text, never as JSON dates. time_in
+        -- and time_out are stored as Manila time, and a JSON date would be moved
+        -- by the time zone of the server (UTC on Vercel). The app reads these
+        -- strings as Manila time.
+        a.attendance_date::text AS attendance_date,
+        to_char(a.time_in, 'YYYY-MM-DD"T"HH24:MI:SS') AS time_in,
+        to_char(a.time_out, 'YYYY-MM-DD"T"HH24:MI:SS') AS time_out,
         a.status,
-        c.campus_name,
-        cs.subject AS class_subject
+        c.campus_name
     FROM attendance a
     LEFT JOIN campuses c ON c.id = a.campus_id
-    LEFT JOIN class_schedules cs ON cs.id = a.class_schedule_id
     JOIN students s ON s.user_id = a.user_id
     WHERE s.id = $1
     ORDER BY a.attendance_date DESC, a.time_in DESC

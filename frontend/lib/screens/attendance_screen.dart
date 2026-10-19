@@ -3,6 +3,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'login_screen.dart';
+import '../services/profile_state.dart';
+import '../services/session_service.dart';
+import '../widgets/daily_schedule_card.dart';
 
 import '../services/api_service.dart';
 import '../services/location_service.dart';
@@ -11,11 +14,13 @@ import 'notifications_screen.dart';
 import 'teacher_class_schedule_screen.dart';
 import '../widgets/app_ui.dart';
 import 'account_settings_screen.dart';
+import '../utils/manila_time.dart';
 
 class AttendanceScreen extends StatefulWidget {
   final String token;
   final String email;
   final String fullName;
+  final String firstName;
   final bool isTeacher;
 
   const AttendanceScreen({
@@ -23,6 +28,7 @@ class AttendanceScreen extends StatefulWidget {
     required this.token,
     required this.email,
     this.fullName = '',
+    this.firstName = '',
     this.isTeacher = false,
   });
 
@@ -51,6 +57,17 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   String get _displayName =>
       widget.fullName.trim().isNotEmpty ? widget.fullName.trim() : widget.email;
 
+  String get _firstName {
+    final live = ProfileState.instance.firstName;
+    return live.isNotEmpty
+        ? live
+        : SessionService.resolveFirstName(widget.firstName, widget.fullName);
+  }
+
+  void _onProfileChanged() {
+    if (mounted) setState(() {});
+  }
+
   String get _locationLabel {
     final status = _status.toLowerCase();
     final detectionMessage = _campusDetectionMessage.toLowerCase();
@@ -76,6 +93,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   @override
   void initState() {
     super.initState();
+    ProfileState.instance.addListener(_onProfileChanged);
     _loadActiveAttendance();
   }
 
@@ -122,6 +140,43 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     await _loadActiveAttendance();
   }
 
+  // A reading with an error of this many meters or less is precise enough.
+  static const double _goodAccuracyMeters = 20;
+
+  // The first GPS reading is often rough (a saved or Wi-Fi based position that
+  // can be tens or hundreds of meters off). Wait a few seconds for the phone to
+  // settle on a precise one and use the most accurate reading seen. If nothing
+  // better arrives, the first reading is used.
+  Future<Position?> _getBestPosition() async {
+    final first = await LocationService.getCurrentLocation();
+    if (first == null || first.accuracy <= _goodAccuracyMeters) return first;
+
+    var best = first;
+    final deadline = DateTime.now().add(const Duration(seconds: 12));
+    try {
+      final readings =
+          Geolocator.getPositionStream(
+            locationSettings: const LocationSettings(
+              accuracy: LocationAccuracy.best,
+              distanceFilter: 0,
+            ),
+          ).timeout(
+            const Duration(seconds: 12),
+            onTimeout: (sink) => sink.close(),
+          );
+      await for (final reading in readings) {
+        if (reading.accuracy < best.accuracy) best = reading;
+        if (best.accuracy <= _goodAccuracyMeters ||
+            DateTime.now().isAfter(deadline)) {
+          break;
+        }
+      }
+    } catch (error) {
+      debugPrint('Precise location skipped: $error');
+    }
+    return best;
+  }
+
   Future<void> _detectCampus() async {
     if (_isLoading || _isDetectingCampus) return;
     setState(() {
@@ -129,7 +184,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       _campusDetectionMessage = '';
     });
     try {
-      final position = await LocationService.getCurrentLocation();
+      final position = await _getBestPosition();
       if (position == null) {
         throw Exception('Location permission is required.');
       }
@@ -138,6 +193,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         token: widget.token,
         latitude: position.latitude,
         longitude: position.longitude,
+        accuracy: position.accuracy,
+        isMocked: position.isMocked,
       );
       if (!mounted) return;
       final detected = result['campus']?['name']?.toString() ?? '';
@@ -165,6 +222,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   void dispose() {
     _locationSubscription?.cancel();
     _heartbeatTimer?.cancel();
+    ProfileState.instance.removeListener(_onProfileChanged);
     super.dispose();
   }
 
@@ -222,11 +280,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
     setState(() {
       _isLoading = true;
-      _status = 'Getting your location...';
+      _status =
+          'Getting your location... hold still for a few seconds for a precise GPS fix.';
     });
 
     try {
-      final position = await LocationService.getCurrentLocation();
+      final position = await _getBestPosition();
 
       if (position == null) {
         throw Exception('Location permission is required.');
@@ -236,6 +295,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         token: widget.token,
         latitude: position.latitude,
         longitude: position.longitude,
+        accuracy: position.accuracy,
+        isMocked: position.isMocked,
       );
 
       if (!mounted) return;
@@ -299,6 +360,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         token: widget.token,
         latitude: position.latitude,
         longitude: position.longitude,
+        accuracy: position.accuracy,
+        isMocked: position.isMocked,
       );
 
       if (!mounted) return;
@@ -341,11 +404,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
     setState(() {
       _isLoading = true;
-      _status = 'Getting your location...';
+      _status =
+          'Getting your location... hold still for a few seconds for a precise GPS fix.';
     });
 
     try {
-      final position = await LocationService.getCurrentLocation();
+      final position = await _getBestPosition();
 
       if (position == null) {
         throw Exception('Location permission is required.');
@@ -355,6 +419,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         token: widget.token,
         latitude: position.latitude,
         longitude: position.longitude,
+        accuracy: position.accuracy,
+        isMocked: position.isMocked,
       );
 
       await _locationSubscription?.cancel();
@@ -382,7 +448,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
   }
 
-  void _signOut() {
+  Future<void> _signOut() async {
+    await SessionService.clear();
+    if (!mounted) return;
     Navigator.pushAndRemoveUntil(
       context,
       MaterialPageRoute(builder: (context) => const LoginScreen()),
@@ -426,7 +494,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     final scheme = theme.colorScheme;
     final date = MaterialLocalizations.of(
       context,
-    ).formatMediumDate(DateTime.now());
+    ).formatMediumDate(ManilaTime.now());
     final canTakeAction = _isCheckedIn || _canCheckIn;
 
     return LayoutBuilder(
@@ -742,6 +810,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                                       ProfileAvatar(
                                         name: _displayName,
                                         radius: 24,
+                                        photo: ProfileState.instance.photo,
                                       ),
                                       const SizedBox(width: 13),
                                       Expanded(
@@ -750,9 +819,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                                               CrossAxisAlignment.start,
                                           children: [
                                             Text(
-                                              widget.fullName.trim().isNotEmpty
-                                                  ? 'Welcome back, ${widget.fullName.trim()}'
-                                                  : 'Welcome back',
+                                              _firstName.isNotEmpty
+                                                  ? 'Welcome, $_firstName'
+                                                  : 'Welcome',
                                               maxLines: 1,
                                               overflow: TextOverflow.ellipsis,
                                               style: Theme.of(context)
@@ -767,7 +836,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                                               MaterialLocalizations.of(
                                                 context,
                                               ).formatMediumDate(
-                                                DateTime.now(),
+                                                ManilaTime.now(),
                                               ),
                                               style: Theme.of(context)
                                                   .textTheme
@@ -848,8 +917,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                                         child: _TodayInfoCard(
                                           icon: Icons.access_time_rounded,
                                           label: 'Current time',
-                                          value: TimeOfDay.now().format(
-                                            context,
+                                          value: ManilaTime.clock(
+                                            ManilaTime.now(),
                                           ),
                                         ),
                                       ),
@@ -866,6 +935,11 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                                         ),
                                       ),
                                     ],
+                                  ),
+                                  const SizedBox(height: 14),
+                                  DailyScheduleCard(
+                                    token: widget.token,
+                                    isTeacher: widget.isTeacher,
                                   ),
                                   const SizedBox(height: 18),
                                   Card(
@@ -1008,7 +1082,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                                                   const SizedBox(width: 9),
                                                   Expanded(
                                                     child: Text(
-                                                      'Outside campus since $_outsideSince',
+                                                      'Outside campus since ${ManilaTime.time(_outsideSince, fallback: _outsideSince)}',
                                                       style: const TextStyle(
                                                         color: Color(
                                                           0xFF80591E,

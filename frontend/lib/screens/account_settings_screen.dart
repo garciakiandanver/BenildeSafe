@@ -1,8 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../services/api_service.dart';
 import '../services/app_preferences.dart';
+import '../services/profile_state.dart';
 import '../widgets/app_ui.dart';
+import 'edit_profile_screen.dart';
 import 'forgot_password_screen.dart';
 
 class AccountSettingsScreen extends StatefulWidget {
@@ -33,6 +37,39 @@ class AccountSettingsScreen extends StatefulWidget {
 
 class _AccountSettingsScreenState extends State<AccountSettingsScreen> {
   bool _isSavingAppearance = false;
+
+  @override
+  void initState() {
+    super.initState();
+    ProfileState.instance.addListener(_onProfileChanged);
+    // Loads the latest student / employee details from the server.
+    if (widget.token.isNotEmpty) {
+      unawaited(ProfileState.instance.refresh(widget.token));
+    }
+  }
+
+  @override
+  void dispose() {
+    ProfileState.instance.removeListener(_onProfileChanged);
+    super.dispose();
+  }
+
+  void _onProfileChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _editProfile() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => EditProfileScreen(
+          token: widget.token,
+          role: widget.role,
+          email: widget.email,
+        ),
+      ),
+    );
+  }
 
   Future<void> _setDarkMode(bool enabled) async {
     setState(() => _isSavingAppearance = true);
@@ -68,6 +105,52 @@ class _AccountSettingsScreenState extends State<AccountSettingsScreen> {
         builder: (context) => ForgotPasswordScreen(initialEmail: widget.email),
       ),
     );
+  }
+
+  String _orDash(String value) => value.isEmpty ? '—' : value;
+
+  // Student: student number, course, year level, section.
+  // Teacher: employee number.
+  List<Widget> _roleDetailRows(ThemeData theme) {
+    final state = ProfileState.instance;
+    final role = widget.role.toLowerCase();
+
+    if (role == 'student') {
+      final year = state.yearLevel;
+      final yearText = int.tryParse(year) != null ? 'Year $year' : year;
+      return [
+        _detailRow(
+          theme,
+          Icons.numbers_rounded,
+          'Student number',
+          _orDash(state.studentNumber),
+        ),
+        _detailRow(theme, Icons.school_outlined, 'Course', _orDash(state.course)),
+        _detailRow(
+          theme,
+          Icons.layers_outlined,
+          'Year level',
+          _orDash(yearText),
+        ),
+        _detailRow(
+          theme,
+          Icons.groups_outlined,
+          'Section',
+          _orDash(state.section),
+        ),
+      ];
+    }
+    if (role == 'teacher') {
+      return [
+        _detailRow(
+          theme,
+          Icons.numbers_rounded,
+          'Employee number',
+          _orDash(state.employeeNumber),
+        ),
+      ];
+    }
+    return const [];
   }
 
   Widget _detailRow(
@@ -128,7 +211,8 @@ class _AccountSettingsScreenState extends State<AccountSettingsScreen> {
 
     // Accounts without a personal record (such as the administrator) have no
     // name, so fall back to the role or the email.
-    final fullName = widget.fullName.trim();
+    final liveName = ProfileState.instance.fullName.trim();
+    final fullName = liveName.isNotEmpty ? liveName : widget.fullName.trim();
     final displayName = fullName.isNotEmpty
         ? fullName
         : (widget.role.toLowerCase() == 'admin'
@@ -152,8 +236,20 @@ class _AccountSettingsScreenState extends State<AccountSettingsScreen> {
                       child: Column(
                         children: [
                           Center(
-                            child: ProfileAvatar(name: displayName, radius: 38),
+                            child: ProfileAvatar(
+                              name: displayName,
+                              radius: 38,
+                              photo: ProfileState.instance.photo,
+                            ),
                           ),
+                          if (widget.token.isNotEmpty) ...[
+                            const SizedBox(height: 12),
+                            OutlinedButton.icon(
+                              onPressed: _editProfile,
+                              icon: const Icon(Icons.edit_outlined),
+                              label: const Text('Edit Profile Picture'),
+                            ),
+                          ],
                           const SizedBox(height: 18),
                           const Divider(),
                           _detailRow(
@@ -174,6 +270,7 @@ class _AccountSettingsScreenState extends State<AccountSettingsScreen> {
                             'Email',
                             widget.email,
                           ),
+                          ..._roleDetailRows(theme),
                         ],
                       ),
                     ),

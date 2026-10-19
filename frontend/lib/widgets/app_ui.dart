@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 
 class SectionHeading extends StatelessWidget {
@@ -159,7 +161,36 @@ class ProfileAvatar extends StatelessWidget {
   final String name;
   final double radius;
 
-  const ProfileAvatar({super.key, required this.name, this.radius = 25});
+  /// Profile photo as a data URL ("data:image/jpeg;base64,..."). When it is
+  /// null or cannot be read, the initials are shown instead.
+  final String? photo;
+
+  const ProfileAvatar({
+    super.key,
+    required this.name,
+    this.radius = 25,
+    this.photo,
+  });
+
+  // Decoding a photo on every rebuild would make it flicker, so keep the last one.
+  static String? _cachedPhoto;
+  static ImageProvider? _cachedImage;
+
+  static ImageProvider? _imageFrom(String? photo) {
+    if (photo == null || photo.isEmpty) return null;
+    if (photo == _cachedPhoto) return _cachedImage;
+    try {
+      final comma = photo.indexOf(',');
+      final bytes = base64Decode(
+        comma >= 0 ? photo.substring(comma + 1) : photo,
+      );
+      _cachedPhoto = photo;
+      _cachedImage = MemoryImage(bytes);
+      return _cachedImage;
+    } catch (_) {
+      return null;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -170,16 +201,20 @@ class ProfileAvatar extends StatelessWidget {
         .take(2)
         .map((part) => part[0].toUpperCase())
         .join();
+    final image = _imageFrom(photo);
     return CircleAvatar(
       radius: radius,
       backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-      child: Text(
-        initials.isEmpty ? '?' : initials,
-        style: TextStyle(
-          color: Theme.of(context).colorScheme.primary,
-          fontWeight: FontWeight.w800,
-        ),
-      ),
+      backgroundImage: image,
+      child: image != null
+          ? null
+          : Text(
+              initials.isEmpty ? '?' : initials,
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.primary,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
     );
   }
 }

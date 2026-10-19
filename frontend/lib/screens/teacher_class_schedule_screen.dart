@@ -30,6 +30,10 @@ class _TeacherClassScheduleScreenState
   String _error = '';
   List<Map<String, dynamic>> _classes = [];
 
+  // Schedule filters. null means "All".
+  String? _courseFilter;
+  String? _yearFilter;
+
   @override
   void initState() {
     super.initState();
@@ -46,6 +50,7 @@ class _TeacherClassScheduleScreenState
       if (!mounted) return;
       setState(() {
         _classes = _groupClasses(result['schedules'] as List<dynamic>? ?? []);
+        _sanitizeFilters();
         _isLoading = false;
       });
     } catch (error) {
@@ -78,16 +83,83 @@ class _TeacherClassScheduleScreenState
 
     final result = groups.values.toList()
       ..sort((a, b) {
-        final bySubject = (a['subject'] ?? '')
-            .toString()
-            .toLowerCase()
-            .compareTo((b['subject'] ?? '').toString().toLowerCase());
-        if (bySubject != 0) return bySubject;
-        return '${a['course']} ${a['year_level']} ${a['section']}'.compareTo(
-          '${b['course']} ${b['year_level']} ${b['section']}',
+        final byCourse = _text(a['course']).toLowerCase().compareTo(
+          _text(b['course']).toLowerCase(),
+        );
+        if (byCourse != 0) return byCourse;
+        final byYear = _compareYears(_text(a['year_level']), _text(b['year_level']));
+        if (byYear != 0) return byYear;
+        final bySection = _text(a['section']).toLowerCase().compareTo(
+          _text(b['section']).toLowerCase(),
+        );
+        if (bySection != 0) return bySection;
+        return _text(a['subject']).toLowerCase().compareTo(
+          _text(b['subject']).toLowerCase(),
         );
       });
     return result;
+  }
+
+  String _text(dynamic value) => (value?.toString() ?? '').trim();
+
+  // "2" before "10"; anything that is not a number sorts by its text.
+  int _compareYears(String a, String b) {
+    final numberA = int.tryParse(a);
+    final numberB = int.tryParse(b);
+    if (numberA != null && numberB != null) return numberA.compareTo(numberB);
+    return a.toLowerCase().compareTo(b.toLowerCase());
+  }
+
+  bool _sameText(dynamic a, String? b) =>
+      b != null && _text(a).toUpperCase() == b.toUpperCase();
+
+  List<String> get _courseOptions {
+    final seen = <String, String>{};
+    for (final item in _classes) {
+      final course = _text(item['course']);
+      if (course.isNotEmpty) seen.putIfAbsent(course.toUpperCase(), () => course);
+    }
+    return seen.values.toList()
+      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+  }
+
+  // Years offered depend on the course picked, so the list stays short.
+  List<String> get _yearOptions {
+    final seen = <String, String>{};
+    for (final item in _classes) {
+      if (_courseFilter != null && !_sameText(item['course'], _courseFilter)) {
+        continue;
+      }
+      final year = _text(item['year_level']);
+      if (year.isNotEmpty) seen.putIfAbsent(year.toUpperCase(), () => year);
+    }
+    return seen.values.toList()..sort(_compareYears);
+  }
+
+  List<Map<String, dynamic>> get _visibleClasses => _classes.where((item) {
+    if (_courseFilter != null && !_sameText(item['course'], _courseFilter)) {
+      return false;
+    }
+    if (_yearFilter != null && !_sameText(item['year_level'], _yearFilter)) {
+      return false;
+    }
+    return true;
+  }).toList();
+
+  void _sanitizeFilters() {
+    if (_courseFilter != null && !_courseOptions.contains(_courseFilter)) {
+      _courseFilter = null;
+    }
+    if (_yearFilter != null && !_yearOptions.contains(_yearFilter)) {
+      _yearFilter = null;
+    }
+  }
+
+  void _clearFilters() {
+    setState(() {
+      _courseFilter = null;
+      _yearFilter = null;
+    });
   }
 
   String _formatTime(dynamic value) {
@@ -246,6 +318,213 @@ class _TeacherClassScheduleScreenState
     );
   }
 
+  Widget _filterChip(String label, bool selected, VoidCallback onTap) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: ChoiceChip(
+        label: Text(label),
+        selected: selected,
+        showCheckmark: false,
+        onSelected: (_) => onTap(),
+        visualDensity: VisualDensity.compact,
+        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        padding: const EdgeInsets.symmetric(horizontal: 6),
+        selectedColor: scheme.primaryContainer,
+        backgroundColor: scheme.surface,
+        side: BorderSide(
+          color: selected ? scheme.primary : scheme.outlineVariant,
+        ),
+        labelStyle: TextStyle(
+          fontSize: 13,
+          fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+          color: selected ? scheme.primary : scheme.onSurface,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFilterRow({
+    required String label,
+    required String allLabel,
+    required List<String> options,
+    required String? selected,
+    required String Function(String) optionLabel,
+    required ValueChanged<String?> onSelected,
+  }) {
+    return SizedBox(
+      height: 40,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          SizedBox(
+            width: 64,
+            child: Text(
+              label,
+              style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          Expanded(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  _filterChip(allLabel, selected == null, () => onSelected(null)),
+                  ...options.map(
+                    (option) => _filterChip(
+                      optionLabel(option),
+                      _sameText(option, selected),
+                      () => onSelected(option),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFilters(int shown) {
+    final theme = Theme.of(context);
+    final hasFilter = _courseFilter != null || _yearFilter != null;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        border: Border(bottom: BorderSide(color: theme.dividerColor)),
+      ),
+      child: Column(
+        children: [
+          _buildFilterRow(
+            label: 'Course',
+            allLabel: 'All courses',
+            options: _courseOptions,
+            selected: _courseFilter,
+            optionLabel: (value) => value,
+            onSelected: (value) => setState(() {
+              _courseFilter = value;
+              if (_yearFilter != null && !_yearOptions.contains(_yearFilter)) {
+                _yearFilter = null;
+              }
+            }),
+          ),
+          const SizedBox(height: 6),
+          _buildFilterRow(
+            label: 'Year',
+            allLabel: 'All years',
+            options: _yearOptions,
+            selected: _yearFilter,
+            optionLabel: (value) => 'Year $value',
+            onSelected: (value) => setState(() => _yearFilter = value),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Showing $shown of ${_classes.length} '
+                  '${_classes.length == 1 ? 'class' : 'classes'}',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+              if (hasFilter)
+                TextButton(
+                  onPressed: _clearFilters,
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  child: const Text('Clear filters'),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // "BSIT • Year 2" heading shown above each course / year group.
+  Widget _buildGroupHeader(Map<String, dynamic> item) {
+    final theme = Theme.of(context);
+    final year = _text(item['year_level']);
+    final label = [
+      _text(item['course']),
+      if (year.isNotEmpty) 'Year $year',
+    ].where((part) => part.isNotEmpty).join(' • ');
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 6, 4, 8),
+      child: Text(
+        label.isEmpty ? 'Other classes' : label,
+        style: theme.textTheme.labelLarge?.copyWith(
+          color: theme.colorScheme.primary,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0.5,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildClassList() {
+    final visible = _visibleClasses;
+    return Column(
+      children: [
+        _buildFilters(visible.length),
+        Expanded(
+          child: RefreshIndicator(
+            onRefresh: _loadSchedule,
+            child: visible.isEmpty
+                ? ListView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    children: [
+                      const SizedBox(height: 80),
+                      EmptyState(
+                        icon: Icons.filter_alt_off_outlined,
+                        title: 'No classes match',
+                        message:
+                            'There are no classes for the selected course and year.',
+                        action: OutlinedButton(
+                          onPressed: _clearFilters,
+                          child: const Text('Clear filters'),
+                        ),
+                      ),
+                    ],
+                  )
+                : ListView.builder(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    padding: const EdgeInsets.all(12),
+                    itemCount: visible.length,
+                    itemBuilder: (context, index) {
+                      final item = visible[index];
+                      final previous = index > 0 ? visible[index - 1] : null;
+                      final newGroup =
+                          previous == null ||
+                          _text(previous['course']).toUpperCase() !=
+                              _text(item['course']).toUpperCase() ||
+                          _text(previous['year_level']).toUpperCase() !=
+                              _text(item['year_level']).toUpperCase();
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (newGroup) _buildGroupHeader(item),
+                          _buildClass(item),
+                        ],
+                      );
+                    },
+                  ),
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -290,15 +569,7 @@ class _TeacherClassScheduleScreenState
                 ],
               ),
             )
-          : RefreshIndicator(
-              onRefresh: _loadSchedule,
-              child: ListView.builder(
-                physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.all(12),
-                itemCount: _classes.length,
-                itemBuilder: (context, index) => _buildClass(_classes[index]),
-              ),
-            ),
+          : _buildClassList(),
     );
   }
 }

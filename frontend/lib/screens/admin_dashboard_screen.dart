@@ -4,6 +4,7 @@ import '../services/api_service.dart';
 import '../theme/app_colors.dart';
 import 'account_settings_screen.dart';
 import 'admin_attendance_screen.dart';
+import 'admin_bulk_accounts_screen.dart';
 import 'admin_campuses_screen.dart';
 import 'admin_class_schedules_screen.dart';
 import 'admin_registration_requests_screen.dart';
@@ -11,6 +12,9 @@ import 'admin_student_report_screen.dart';
 import 'admin_users_screen.dart';
 import 'login_screen.dart';
 import 'notifications_screen.dart';
+import '../services/profile_state.dart';
+import '../utils/manila_time.dart';
+import '../widgets/app_ui.dart';
 
 class AdminDashboardScreen extends StatefulWidget {
   final String token;
@@ -38,7 +42,19 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   @override
   void initState() {
     super.initState();
+    ProfileState.instance.addListener(_onProfileChanged);
+    ProfileState.instance.refresh(widget.token);
     _loadSummary();
+  }
+
+  void _onProfileChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    ProfileState.instance.removeListener(_onProfileChanged);
+    super.dispose();
   }
 
   Future<void> _loadSummary() async {
@@ -130,6 +146,9 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   Future<void> _openUsers() =>
       _openScreen(AdminUsersScreen(token: widget.token));
 
+  Future<void> _openBulkAccounts() =>
+      _openScreen(AdminBulkAccountsScreen(token: widget.token));
+
   Future<void> _openAttendance() =>
       _openScreen(AdminAttendanceScreen(token: widget.token));
 
@@ -161,6 +180,12 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
+              leading: const Icon(Icons.upload_file_outlined),
+              title: const Text('Bulk accounts'),
+              subtitle: const Text('Create student and parent accounts from Excel'),
+              onTap: () => Navigator.pop(sheetContext, 'bulk'),
+            ),
+            ListTile(
               leading: const Icon(Icons.calendar_month_outlined),
               title: const Text('Class schedules'),
               onTap: () => Navigator.pop(sheetContext, 'schedules'),
@@ -191,6 +216,9 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     );
     if (!mounted || action == null) return;
     switch (action) {
+      case 'bulk':
+        await _openBulkAccounts();
+        break;
       case 'schedules':
         await _openSchedules();
         break;
@@ -475,6 +503,14 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          ProfileAvatar(
+            name: widget.fullName.trim().isNotEmpty
+                ? widget.fullName.trim()
+                : 'Administrator',
+            radius: 24,
+            photo: ProfileState.instance.photo,
+          ),
+          const SizedBox(width: 13),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -513,7 +549,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                   Text(
                     MaterialLocalizations.of(
                       context,
-                    ).formatMediumDate(DateTime.now()),
+                    ).formatMediumDate(ManilaTime.now()),
                     style: const TextStyle(
                       fontWeight: FontWeight.w600,
                       fontSize: 12.5,
@@ -614,6 +650,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             children: [
               _Sidebar(
                 onUsers: _openUsers,
+                onBulkAccounts: _openBulkAccounts,
                 onAttendance: _openAttendance,
                 onSchedules: _openSchedules,
                 onCampuses: _openCampuses,
@@ -671,6 +708,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
 
 class _Sidebar extends StatelessWidget {
   final VoidCallback onUsers;
+  final VoidCallback onBulkAccounts;
   final VoidCallback onAttendance;
   final VoidCallback onSchedules;
   final VoidCallback onCampuses;
@@ -681,6 +719,7 @@ class _Sidebar extends StatelessWidget {
 
   const _Sidebar({
     required this.onUsers,
+    required this.onBulkAccounts,
     required this.onAttendance,
     required this.onSchedules,
     required this.onCampuses,
@@ -745,6 +784,13 @@ class _Sidebar extends StatelessWidget {
                   activeIcon: Icons.people_rounded,
                   label: 'Users',
                   onTap: onUsers,
+                ),
+                _navItem(
+                  context,
+                  icon: Icons.upload_file_outlined,
+                  activeIcon: Icons.upload_file_rounded,
+                  label: 'Bulk accounts',
+                  onTap: onBulkAccounts,
                 ),
                 _navItem(
                   context,

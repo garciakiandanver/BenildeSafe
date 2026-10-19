@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 
 import '../services/api_service.dart';
+import '../services/profile_state.dart';
+import '../services/session_service.dart';
 import 'admin_dashboard_screen.dart';
 import 'attendance_screen.dart';
 import 'forgot_password_screen.dart';
+import 'change_password_screen.dart';
 import 'parent_dashboard_screen.dart';
 import 'register_screen.dart';
 
@@ -22,6 +25,14 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _obscurePassword = true;
   String _message = '';
   bool _isError = true;
+
+  @override
+  void initState() {
+    super.initState();
+    // Landing on the login screen means the user logged out (or the session is gone).
+    SessionService.clear();
+    ProfileState.instance.clear();
+  }
 
   Future<void> _login() async {
     final email = _emailController.text.trim();
@@ -56,6 +67,11 @@ class _LoginScreenState extends State<LoginScreen> {
         throw Exception('User role was not returned.');
       }
 
+      final firstName = SessionService.resolveFirstName(
+        result['user']?['first_name'] as String?,
+        fullName,
+      );
+
       if (!mounted) return;
 
       final Widget destination;
@@ -65,6 +81,7 @@ class _LoginScreenState extends State<LoginScreen> {
             token: token,
             email: email,
             fullName: fullName,
+            firstName: firstName,
           );
           break;
         case 'teacher':
@@ -72,6 +89,7 @@ class _LoginScreenState extends State<LoginScreen> {
             token: token,
             email: email,
             fullName: fullName,
+            firstName: firstName,
             isTeacher: true,
           );
           break;
@@ -92,6 +110,39 @@ class _LoginScreenState extends State<LoginScreen> {
         default:
           throw Exception('Unknown user role: $role');
       }
+
+      ProfileState.instance.setUser(
+        fullName: fullName,
+        firstName: firstName,
+        photo: result['user']?['profile_photo'] as String?,
+      );
+
+      final session = Session(
+        token: token,
+        email: email,
+        role: role,
+        fullName: fullName,
+        firstName: firstName,
+      );
+
+      // Accounts created with a temporary password must set their own first.
+      // The session is saved only after that, so the dashboard stays locked.
+      if (result['user']?['must_change_password'] == true) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (context) => ChangePasswordScreen(
+              session: session,
+              currentPassword: password,
+              next: destination,
+            ),
+          ),
+        );
+        return;
+      }
+
+      await SessionService.save(session);
+      if (!mounted) return;
 
       Navigator.pushReplacement(
         context,
@@ -290,7 +341,7 @@ class _LoginScreenState extends State<LoginScreen> {
               const SizedBox(height: 20),
             ],
             Text(
-              'Welcome back',
+              'Welcome',
               textAlign: isNarrow ? TextAlign.center : TextAlign.left,
               style: theme.textTheme.headlineSmall?.copyWith(
                 fontWeight: FontWeight.w800,

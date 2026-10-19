@@ -6,17 +6,22 @@ import 'notifications_screen.dart';
 import 'login_screen.dart';
 import '../widgets/app_ui.dart';
 import 'account_settings_screen.dart';
+import '../services/profile_state.dart';
+import '../services/session_service.dart';
+import '../utils/manila_time.dart';
 
 class ParentDashboardScreen extends StatefulWidget {
   final String token;
   final String email;
   final String fullName;
+  final String firstName;
 
   const ParentDashboardScreen({
     super.key,
     required this.token,
     required this.email,
     this.fullName = '',
+    this.firstName = '',
   });
 
   @override
@@ -56,6 +61,8 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
   @override
   void initState() {
     super.initState();
+    ProfileState.instance.addListener(_onProfileChanged);
+    ProfileState.instance.refresh(widget.token);
     _loadAll();
     // Check for new notifications every 30 seconds while this screen is open.
     _notificationTimer = Timer.periodic(
@@ -64,8 +71,16 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
     );
   }
 
+  String get _firstName =>
+      SessionService.resolveFirstName(widget.firstName, widget.fullName);
+
+  void _onProfileChanged() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void dispose() {
+    ProfileState.instance.removeListener(_onProfileChanged);
     _notificationTimer?.cancel();
     super.dispose();
   }
@@ -149,12 +164,12 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
     });
   }
 
-  DateTime? _parseLocal(dynamic value) =>
-      DateTime.tryParse(value?.toString() ?? '')?.toLocal();
+  // Manila time, whatever time zone the phone or browser uses.
+  DateTime? _parseLocal(dynamic value) => ManilaTime.parse(value);
 
   // What a child did today, from their attendance records (newest first).
   Map<String, dynamic> _summarizeToday(List<dynamic> attendance) {
-    final now = DateTime.now();
+    final now = ManilaTime.now(); // "today" is today in Manila
     final todays = attendance
         .map((record) => Map<String, dynamic>.from(record as Map))
         .where((record) {
@@ -289,16 +304,20 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
     final theme = Theme.of(context);
     return Row(
       children: [
-        ProfileAvatar(name: _displayName, radius: 25),
+        ProfileAvatar(
+          name: _displayName,
+          radius: 25,
+          photo: ProfileState.instance.photo,
+        ),
         const SizedBox(width: 13),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                widget.fullName.trim().isNotEmpty
-                    ? 'Welcome, ${widget.fullName.trim()}'
-                    : 'Welcome back',
+                _firstName.isNotEmpty
+                    ? 'Welcome, $_firstName'
+                    : 'Welcome',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: theme.textTheme.titleLarge?.copyWith(

@@ -69,6 +69,8 @@ class ApiService {
     required String token,
     required double latitude,
     required double longitude,
+    double? accuracy,
+    bool? isMocked,
   }) async {
     final response = await http.post(
       Uri.parse('$baseUrl/attendance/check-in'),
@@ -76,7 +78,14 @@ class ApiService {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $token',
       },
-      body: jsonEncode({'latitude': latitude, 'longitude': longitude}),
+      body: jsonEncode({
+        'latitude': latitude,
+        'longitude': longitude,
+        // How accurate the GPS reading is, in meters. The server uses it to
+        // avoid wrong inside / outside results near the campus boundary.
+        'accuracy': ?accuracy,
+        if (isMocked == true) 'is_mocked': true,
+      }),
     );
 
     return _handleResponse(response);
@@ -86,6 +95,8 @@ class ApiService {
     required String token,
     required double latitude,
     required double longitude,
+    double? accuracy,
+    bool? isMocked,
   }) async {
     final response = await http.post(
       Uri.parse('$baseUrl/attendance/detect-campus'),
@@ -93,7 +104,14 @@ class ApiService {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $token',
       },
-      body: jsonEncode({'latitude': latitude, 'longitude': longitude}),
+      body: jsonEncode({
+        'latitude': latitude,
+        'longitude': longitude,
+        // How accurate the GPS reading is, in meters. The server uses it to
+        // avoid wrong inside / outside results near the campus boundary.
+        'accuracy': ?accuracy,
+        if (isMocked == true) 'is_mocked': true,
+      }),
     );
     return _handleResponse(response);
   }
@@ -121,6 +139,27 @@ class ApiService {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $token',
       },
+    );
+    return _handleResponse(response);
+  }
+
+  static Future<Map<String, dynamic>> getNextClass({
+    required String token,
+  }) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/attendance/next-class'),
+      headers: _authenticatedJsonHeaders(token),
+    );
+    return _handleResponse(response);
+  }
+
+  // One time window per school day (first class start to last class end).
+  static Future<Map<String, dynamic>> getDailySchedule({
+    required String token,
+  }) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/attendance/daily-schedule'),
+      headers: _authenticatedJsonHeaders(token),
     );
     return _handleResponse(response);
   }
@@ -180,6 +219,8 @@ class ApiService {
     required String token,
     required double latitude,
     required double longitude,
+    double? accuracy,
+    bool? isMocked,
   }) async {
     final response = await http.post(
       Uri.parse('$baseUrl/attendance/location'),
@@ -187,7 +228,14 @@ class ApiService {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $token',
       },
-      body: jsonEncode({'latitude': latitude, 'longitude': longitude}),
+      body: jsonEncode({
+        'latitude': latitude,
+        'longitude': longitude,
+        // How accurate the GPS reading is, in meters. The server uses it to
+        // avoid wrong inside / outside results near the campus boundary.
+        'accuracy': ?accuracy,
+        if (isMocked == true) 'is_mocked': true,
+      }),
     );
 
     return _handleResponse(response);
@@ -197,6 +245,8 @@ class ApiService {
     required String token,
     required double latitude,
     required double longitude,
+    double? accuracy,
+    bool? isMocked,
   }) async {
     final response = await http.post(
       Uri.parse('$baseUrl/attendance/check-out'),
@@ -204,7 +254,14 @@ class ApiService {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $token',
       },
-      body: jsonEncode({'latitude': latitude, 'longitude': longitude}),
+      body: jsonEncode({
+        'latitude': latitude,
+        'longitude': longitude,
+        // How accurate the GPS reading is, in meters. The server uses it to
+        // avoid wrong inside / outside results near the campus boundary.
+        'accuracy': ?accuracy,
+        if (isMocked == true) 'is_mocked': true,
+      }),
     );
 
     return _handleResponse(response);
@@ -962,6 +1019,123 @@ class ApiService {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $token',
       },
+    );
+    return _handleResponse(response);
+  }
+
+  // ---------------------------------------------------------------- profile
+
+  static Future<Map<String, dynamic>> getProfile({
+    required String token,
+  }) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/profile'),
+      headers: _authenticatedJsonHeaders(token),
+    );
+    return _handleResponse(response);
+  }
+
+  static Future<Map<String, dynamic>> updateProfile({
+    required String token,
+    required String firstName,
+    required String middleName,
+    required String lastName,
+  }) async {
+    final response = await http.put(
+      Uri.parse('$baseUrl/profile'),
+      headers: _authenticatedJsonHeaders(token),
+      body: jsonEncode({
+        'first_name': firstName,
+        'middle_name': middleName,
+        'last_name': lastName,
+      }),
+    );
+    return _handleResponse(response);
+  }
+
+  // photo is a data URL, e.g. "data:image/jpeg;base64,...."
+  static Future<Map<String, dynamic>> uploadProfilePhoto({
+    required String token,
+    required String photo,
+  }) async {
+    final response = await http.put(
+      Uri.parse('$baseUrl/profile/photo'),
+      headers: _authenticatedJsonHeaders(token),
+      body: jsonEncode({'photo': photo}),
+    );
+    return _handleResponse(response);
+  }
+
+  static Future<Map<String, dynamic>> deleteProfilePhoto({
+    required String token,
+  }) async {
+    final response = await http.delete(
+      Uri.parse('$baseUrl/profile/photo'),
+      headers: _authenticatedJsonHeaders(token),
+    );
+    return _handleResponse(response);
+  }
+
+  // ------------------------------------------------------------ bulk accounts
+
+  // Reads and checks an Excel / CSV file of students and parents.
+  // Nothing is created yet.
+  static Future<Map<String, dynamic>> previewBulkAccounts({
+    required String token,
+    required String fileName,
+    required Uint8List bytes,
+  }) async {
+    final accessToken = token.trim();
+    if (accessToken.isEmpty) {
+      throw Exception('Your session has expired. Please sign in again.');
+    }
+    final request =
+        http.MultipartRequest(
+            'POST',
+            Uri.parse('$baseUrl/admin/bulk-accounts/preview'),
+          )
+          ..headers['Authorization'] = 'Bearer $accessToken'
+          ..files.add(
+            http.MultipartFile.fromBytes('file', bytes, filename: fileName),
+          );
+    final streamedResponse = await request.send();
+    final response = await http.Response.fromStream(streamedResponse);
+    return _handleResponse(response);
+  }
+
+  // Creates the accounts of a few checked rows and emails them.
+  static Future<Map<String, dynamic>> commitBulkAccounts({
+    required String token,
+    required List<Map<String, dynamic>> rows,
+  }) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/admin/bulk-accounts/commit'),
+      headers: _authenticatedJsonHeaders(token),
+      body: jsonEncode({'rows': rows}),
+    );
+    return _handleResponse(response);
+  }
+
+  // Accounts that still have a temporary password.
+  static Future<Map<String, dynamic>> getPendingAccounts({
+    required String token,
+  }) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/admin/bulk-accounts/pending'),
+      headers: _authenticatedJsonHeaders(token),
+    );
+    return _handleResponse(response);
+  }
+
+  // Emails a NEW temporary password to accounts that have not signed in yet.
+  static Future<Map<String, dynamic>> resendAccountEmails({
+    required String token,
+    required List<String> emails,
+  }) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/admin/bulk-accounts/resend'),
+      headers: _authenticatedJsonHeaders(token),
+      body: jsonEncode({'emails': emails}),
     );
     return _handleResponse(response);
   }
