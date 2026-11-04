@@ -8,7 +8,6 @@ const ROLE_TABLES = {
   parent: 'parents'
 };
 
-const NAME_PATTERN = /^[\p{L}\p{M}][\p{L}\p{M}\s.'-]*$/u;
 const PHOTO_PATTERN = /^data:image\/(jpeg|png|webp);base64,([A-Za-z0-9+/]+={0,2})$/;
 const MAX_PHOTO_BYTES = 400 * 1024; // decoded size
 
@@ -46,7 +45,6 @@ const loadProfile = async (userId, role) => {
     details.student_number = clean(record.student_number);
     details.course = clean(record.course);
     details.year_level = clean(record.year_level);
-    details.section = clean(record.section);
   } else if (role === 'teacher') {
     details.employee_number = clean(
       record.employee_number ??
@@ -82,59 +80,6 @@ const getProfile = async (req, res) => {
   } catch (error) {
     console.error('Get profile error:', error);
     return res.status(500).json({ message: 'Could not load your profile.' });
-  }
-};
-
-const cleanName = (value) => String(value ?? '').trim().replace(/\s+/g, ' ');
-
-// PUT /api/profile   Body: { first_name, middle_name, last_name }
-const updateProfile = async (req, res) => {
-  try {
-    const role = roleOf(req);
-    const table = ROLE_TABLES[role];
-    if (!table) {
-      return res.status(400).json({
-        message: 'This account does not have an editable name.'
-      });
-    }
-
-    const firstName = cleanName(req.body.first_name);
-    const middleName = cleanName(req.body.middle_name);
-    const lastName = cleanName(req.body.last_name);
-
-    if (!firstName || !lastName) {
-      return res.status(400).json({
-        message: 'First name and last name are required.'
-      });
-    }
-    for (const [label, value, required] of [
-      ['First name', firstName, true],
-      ['Middle name', middleName, false],
-      ['Last name', lastName, true]
-    ]) {
-      if (!value && !required) continue;
-      if (value.length > 60 || !NAME_PATTERN.test(value)) {
-        return res.status(400).json({
-          message: `${label} can only contain letters, spaces, apostrophes, periods and hyphens (max 60 characters).`
-        });
-      }
-    }
-
-    const result = await pool.query(
-      `UPDATE ${table}
-       SET first_name = $1, middle_name = $2, last_name = $3
-       WHERE user_id = $4`,
-      [firstName, middleName, lastName, req.user.userId]
-    );
-    if (result.rowCount === 0) {
-      return res.status(404).json({ message: 'Profile record not found.' });
-    }
-
-    const profile = await loadProfile(req.user.userId, role);
-    return res.json({ message: 'Profile updated.', user: profile });
-  } catch (error) {
-    console.error('Update profile error:', error);
-    return res.status(500).json({ message: 'Could not update your profile.' });
   }
 };
 
@@ -182,4 +127,4 @@ const deletePhoto = async (req, res) => {
   }
 };
 
-module.exports = { getProfile, updateProfile, uploadPhoto, deletePhoto };
+module.exports = { getProfile, uploadPhoto, deletePhoto };

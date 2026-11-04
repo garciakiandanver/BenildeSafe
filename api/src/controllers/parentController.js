@@ -30,8 +30,7 @@ const getChildren = async (req, res) => {
         s.middle_name,
         s.last_name,
         s.course,
-        s.year_level,
-        s.section
+        s.year_level
       FROM students s
       WHERE s.parent_id = $1
       ORDER BY s.first_name

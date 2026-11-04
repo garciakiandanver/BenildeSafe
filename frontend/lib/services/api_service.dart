@@ -130,29 +130,6 @@ class ApiService {
     return _handleResponse(response);
   }
 
-  static Future<Map<String, dynamic>> getCurrentClassSchedule({
-    required String token,
-  }) async {
-    final response = await http.get(
-      Uri.parse('$baseUrl/attendance/current-class'),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $token',
-      },
-    );
-    return _handleResponse(response);
-  }
-
-  static Future<Map<String, dynamic>> getNextClass({
-    required String token,
-  }) async {
-    final response = await http.get(
-      Uri.parse('$baseUrl/attendance/next-class'),
-      headers: _authenticatedJsonHeaders(token),
-    );
-    return _handleResponse(response);
-  }
-
   // One time window per school day (first class start to last class end).
   static Future<Map<String, dynamic>> getDailySchedule({
     required String token,
@@ -221,6 +198,9 @@ class ApiService {
     required double longitude,
     double? accuracy,
     bool? isMocked,
+    // false: the server may ask for a second reading before it records that
+    // the student left the campus. true: this is that second reading.
+    bool? confirmed,
   }) async {
     final response = await http.post(
       Uri.parse('$baseUrl/attendance/location'),
@@ -235,6 +215,7 @@ class ApiService {
         // avoid wrong inside / outside results near the campus boundary.
         'accuracy': ?accuracy,
         if (isMocked == true) 'is_mocked': true,
+        'confirmed': ?confirmed,
       }),
     );
 
@@ -319,6 +300,30 @@ class ApiService {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $token',
       },
+    );
+    return _handleResponse(response);
+  }
+
+  // Adds one teacher account. The server makes a temporary password and emails
+  // it; the teacher is asked to change it at the first sign-in.
+  static Future<Map<String, dynamic>> addTeacher({
+    required String token,
+    required String firstName,
+    required String middleName,
+    required String lastName,
+    required String email,
+    required String employeeNumber,
+  }) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/admin/teachers'),
+      headers: _authenticatedJsonHeaders(token),
+      body: jsonEncode({
+        'first_name': firstName,
+        'middle_name': middleName,
+        'last_name': lastName,
+        'email': email,
+        'employee_number': employeeNumber,
+      }),
     );
     return _handleResponse(response);
   }
@@ -799,14 +804,15 @@ class ApiService {
     return _handleResponse(response);
   }
 
+  // Students only; the server no longer takes a role. Course and year level
+  // come back with every record and are filtered in the screen itself.
   static Future<Map<String, dynamic>> getAdminAttendance({
     required String token,
     String? date,
-    String? role,
   }) async {
     final uri = Uri.parse(
       '$baseUrl/admin/attendance',
-    ).replace(queryParameters: {'date': ?date, 'role': ?role});
+    ).replace(queryParameters: {'date': ?date});
 
     final response = await http.get(
       uri,
@@ -818,39 +824,23 @@ class ApiService {
     return _handleResponse(response);
   }
 
-  static Future<Map<String, dynamic>> register({
-    required String email,
-    required String password,
-    required String firstName,
-    required String middleName,
-    required String lastName,
-    required int requestedRoleId,
-    String? studentNumber,
-    String? course,
-    String? yearLevel,
-    String? section,
-    String? employeeNumber,
-    String? contactNumber,
-    String? childStudentNumber,
+
+  // Admin: students on campus each day for the last [days] Manila days (7 or
+  // 30), with how many were late. For the dashboard chart.
+  static Future<Map<String, dynamic>> getAttendanceTrend({
+    required String token,
+    int days = 7,
   }) async {
-    final response = await http.post(
-      Uri.parse('$baseUrl/register'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({
-        'email': email,
-        'password': password,
-        'first_name': firstName,
-        'middle_name': middleName,
-        'last_name': lastName,
-        'requested_role_id': requestedRoleId,
-        'student_number': studentNumber,
-        'course': course,
-        'year_level': yearLevel,
-        'section': section,
-        'employee_number': employeeNumber,
-        'contact_number': contactNumber,
-        'child_student_number': childStudentNumber,
-      }),
+    final uri = Uri.parse(
+      '$baseUrl/admin/attendance/trend',
+    ).replace(queryParameters: {'days': '$days'});
+
+    final response = await http.get(
+      uri,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $token',
+      },
     );
     return _handleResponse(response);
   }
@@ -929,46 +919,8 @@ class ApiService {
     return _handleResponse(response);
   }
 
-  static Future<Map<String, dynamic>> getRegistrationRequests({
-    required String token,
-  }) async {
-    final response = await http.get(
-      Uri.parse('$baseUrl/admin/registration-requests'),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $token',
-      },
-    );
-    return _handleResponse(response);
-  }
 
-  static Future<Map<String, dynamic>> approveRequest({
-    required String token,
-    required String requestId,
-  }) async {
-    final response = await http.put(
-      Uri.parse('$baseUrl/admin/registration-requests/$requestId/approve'),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $token',
-      },
-    );
-    return _handleResponse(response);
-  }
 
-  static Future<Map<String, dynamic>> rejectRequest({
-    required String token,
-    required String requestId,
-  }) async {
-    final response = await http.put(
-      Uri.parse('$baseUrl/admin/registration-requests/$requestId/reject'),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $token',
-      },
-    );
-    return _handleResponse(response);
-  }
 
   static Future<Map<String, dynamic>> correctAttendance({
     required String token,
@@ -976,6 +928,7 @@ class ApiService {
     String? timeIn,
     String? timeOut,
     String? status,
+    required String remarks,
   }) async {
     final response = await http.put(
       Uri.parse('$baseUrl/admin/attendance/$attendanceId'),
@@ -987,18 +940,17 @@ class ApiService {
         'time_in': ?timeIn,
         'time_out': ?timeOut,
         'status': ?status,
+        'remarks': remarks,
       }),
     );
     return _handleResponse(response);
   }
 
+  // Students only, with course and year level on every row.
   static Future<Map<String, dynamic>> getReportUsers({
     required String token,
-    String? role,
   }) async {
-    final uri = Uri.parse(
-      '$baseUrl/admin/report/users',
-    ).replace(queryParameters: role == null ? null : {'role': role});
+    final uri = Uri.parse('$baseUrl/admin/report/users');
     final response = await http.get(
       uri,
       headers: {
@@ -1031,24 +983,6 @@ class ApiService {
     final response = await http.get(
       Uri.parse('$baseUrl/profile'),
       headers: _authenticatedJsonHeaders(token),
-    );
-    return _handleResponse(response);
-  }
-
-  static Future<Map<String, dynamic>> updateProfile({
-    required String token,
-    required String firstName,
-    required String middleName,
-    required String lastName,
-  }) async {
-    final response = await http.put(
-      Uri.parse('$baseUrl/profile'),
-      headers: _authenticatedJsonHeaders(token),
-      body: jsonEncode({
-        'first_name': firstName,
-        'middle_name': middleName,
-        'last_name': lastName,
-      }),
     );
     return _handleResponse(response);
   }

@@ -358,20 +358,20 @@ class _DailyScheduleCardState extends State<DailyScheduleCard> {
     final String heading;
     if (showingToday && state == 'in_session') {
       accent = const Color(0xFF248A5A);
-      heading = 'TODAY\'S SCHEDULE';
+      heading = 'Today\'s schedule';
       badge = 'In session';
     } else if (showingToday) {
       accent = theme.colorScheme.primary;
-      heading = 'TODAY\'S SCHEDULE';
+      heading = 'Today\'s schedule';
       final until = _minutesUntilStart();
       badge = until < 1 ? 'Starting now' : 'Starts in ${_duration(until)}';
     } else if (shown != null) {
       accent = theme.colorScheme.primary;
-      heading = today != null ? 'DONE FOR TODAY' : 'NO CLASSES TODAY';
+      heading = today != null ? 'Done for today' : 'No classes today';
       badge = _dayLabel(shown);
     } else {
       accent = theme.colorScheme.onSurfaceVariant;
-      heading = 'DONE FOR TODAY';
+      heading = 'Done for today';
       badge = 'No more days this week';
     }
 
@@ -389,10 +389,9 @@ class _DailyScheduleCardState extends State<DailyScheduleCard> {
                 Flexible(
                   child: Text(
                     heading,
-                    style: theme.textTheme.labelMedium?.copyWith(
+                    style: theme.textTheme.titleSmall?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 1,
+                      fontWeight: FontWeight.w700,
                     ),
                   ),
                 ),

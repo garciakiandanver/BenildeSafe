@@ -71,7 +71,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         state.studentNumber = text('student_number');
         state.course = text('course');
         state.yearLevel = text('year_level');
-        state.section = text('section');
         state.employeeNumber = text('employee_number');
         state.setPhoto(user['profile_photo'] as String?);
       }
@@ -162,7 +161,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     );
   }
 
-  // Student: student number, course, year level, section.
+  // Student: student number, course, year level.
   // Teacher: employee number. All read-only.
   List<Widget> _roleFields() {
     final state = ProfileState.instance;
@@ -176,7 +175,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
           'Year level',
           int.tryParse(year) != null ? 'Year $year' : year,
         ),
-        _lockedField('Section', state.section),
       ];
     }
     if (role == 'teacher') {
@@ -192,7 +190,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     final displayName = state.fullName.isNotEmpty ? state.fullName : widget.email;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Profile')),
+      appBar: AppBar(title: const Text('Edit profile')),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : ListView(

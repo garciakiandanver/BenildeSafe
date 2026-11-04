@@ -109,7 +109,7 @@ class _AccountSettingsScreenState extends State<AccountSettingsScreen> {
 
   String _orDash(String value) => value.isEmpty ? '—' : value;
 
-  // Student: student number, course, year level, section.
+  // Student: student number, course, year level.
   // Teacher: employee number.
   List<Widget> _roleDetailRows(ThemeData theme) {
     final state = ProfileState.instance;
@@ -131,12 +131,6 @@ class _AccountSettingsScreenState extends State<AccountSettingsScreen> {
           Icons.layers_outlined,
           'Year level',
           _orDash(yearText),
-        ),
-        _detailRow(
-          theme,
-          Icons.groups_outlined,
-          'Section',
-          _orDash(state.section),
         ),
       ];
     }
@@ -191,13 +185,42 @@ class _AccountSettingsScreenState extends State<AccountSettingsScreen> {
     );
   }
 
+  /// The same question the admin sidebar asks, for every role. Signing out
+  /// by accident on a shared phone means typing the password again.
+  Future<void> _confirmSignOut() async {
+    final scheme = Theme.of(context).colorScheme;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Sign out?'),
+        content: const Text(
+          'You will need to sign in again to access BenildeSafe.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: scheme.error,
+              foregroundColor: scheme.onError,
+            ),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Sign out'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true && mounted) widget.onSignOut();
+  }
+
   Widget _sectionTitle(ThemeData theme, String text) {
     return Text(
       text,
       style: theme.textTheme.labelMedium?.copyWith(
         color: theme.colorScheme.onSurfaceVariant,
-        fontWeight: FontWeight.w800,
-        letterSpacing: 1,
+        fontWeight: FontWeight.w700,
       ),
     );
   }
@@ -230,7 +253,8 @@ class _AccountSettingsScreenState extends State<AccountSettingsScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Card(
+                  AppCard(
+                    margin: EdgeInsets.zero,
                     child: Padding(
                       padding: const EdgeInsets.all(22),
                       child: Column(
@@ -247,7 +271,7 @@ class _AccountSettingsScreenState extends State<AccountSettingsScreen> {
                             OutlinedButton.icon(
                               onPressed: _editProfile,
                               icon: const Icon(Icons.edit_outlined),
-                              label: const Text('Edit Profile Picture'),
+                              label: const Text('Edit profile'),
                             ),
                           ],
                           const SizedBox(height: 18),
@@ -276,9 +300,11 @@ class _AccountSettingsScreenState extends State<AccountSettingsScreen> {
                     ),
                   ),
                   const SizedBox(height: 24),
-                  _sectionTitle(theme, 'SECURITY'),
+                  _sectionTitle(theme, 'Security'),
                   const SizedBox(height: 10),
-                  Card(
+                  AppCard(
+                    index: 1,
+                    margin: EdgeInsets.zero,
                     child: Column(
                       children: [
                         if (widget.token.isNotEmpty) ...[
@@ -312,9 +338,11 @@ class _AccountSettingsScreenState extends State<AccountSettingsScreen> {
                     ),
                   ),
                   const SizedBox(height: 24),
-                  _sectionTitle(theme, 'PREFERENCES'),
+                  _sectionTitle(theme, 'Preferences'),
                   const SizedBox(height: 10),
-                  Card(
+                  AppCard(
+                    index: 2,
+                    margin: EdgeInsets.zero,
                     child: ListenableBuilder(
                       listenable: AppPreferences.instance,
                       builder: (context, _) => SwitchListTile(
@@ -337,7 +365,7 @@ class _AccountSettingsScreenState extends State<AccountSettingsScreen> {
                   ),
                   const SizedBox(height: 24),
                   OutlinedButton.icon(
-                    onPressed: widget.onSignOut,
+                    onPressed: _confirmSignOut,
                     icon: const Icon(Icons.logout_rounded),
                     label: const Text('Sign out'),
                     style: OutlinedButton.styleFrom(

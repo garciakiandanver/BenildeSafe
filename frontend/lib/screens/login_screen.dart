@@ -8,7 +8,6 @@ import 'attendance_screen.dart';
 import 'forgot_password_screen.dart';
 import 'change_password_screen.dart';
 import 'parent_dashboard_screen.dart';
-import 'register_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -272,11 +271,14 @@ class _LoginScreenState extends State<LoginScreen> {
             ),
           ),
           const SizedBox(height: 28),
-          _welcomePoint(Icons.fact_check_outlined, 'Easy class attendance'),
+          _welcomePoint(
+            Icons.fact_check_outlined,
+            'Campus attendance, time in and time out.',
+          ),
           const SizedBox(height: 14),
           _welcomePoint(
             Icons.my_location,
-            'GPS-verified check-in for students and teachers.',
+            'GPS-verified time in for students, inside the campus.',
           ),
           const SizedBox(height: 14),
           _welcomePoint(
@@ -479,32 +481,16 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
             ),
             const SizedBox(height: 19),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Flexible(
-                  child: Text(
-                    'New to BenildeSafe?',
-                    style: TextStyle(
-                      color: theme.colorScheme.onSurfaceVariant,
-                      fontSize: 12,
-                    ),
-                  ),
-                ),
-                TextButton(
-                  onPressed: _isLoading
-                      ? null
-                      : () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => const RegisterScreen(),
-                            ),
-                          );
-                        },
-                  child: const Text('Create an account'),
-                ),
-              ],
+            // Accounts are created by the school from the registrar's records.
+            // Nobody can register themselves.
+            Text(
+              'Accounts are created by the school. If you do not have one yet, '
+              'please ask the school office.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: theme.colorScheme.onSurfaceVariant,
+                fontSize: 12,
+              ),
             ),
           ],
         ),

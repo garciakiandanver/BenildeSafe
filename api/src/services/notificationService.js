@@ -195,6 +195,101 @@ const createAttendanceNotifications = async ({
   );
 };
 
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** "2026-11-02" -> "Nov 2, 2026". The date is a Manila date already. */
+const formatDay = (text) => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(text ?? ''));
+  if (!match) return 'that day';
+  return `${MONTHS[Number(match[2]) - 1]} ${Number(match[3])}, ${match[1]}`;
+};
+
+/**
+ * Records a correction an administrator made to an attendance record, with
+ * the reason they gave, and tells the student and their parent.
+ *
+ * The notifications table already has a JSON `metadata` column, so the
+ * remarks, what changed and who changed it are kept there (event
+ * 'attendance_corrected', with the attendance id). No column is added to the
+ * attendance table, and the Attendance Records screen reads the latest
+ * correction of each record from here.
+ *
+ * `changes` is a short list of what was changed, e.g.
+ * ["Time in 7:30 AM -> 8:00 AM", "Status Present -> Late"].
+ *
+ * Throws on database errors; the caller decides what to do.
+ */
+const createCorrectionNotifications = async ({
+  attendanceId,
+  remarks,
+  changes,
+  adminUserId
+}) => {
+  const recordResult = await pool.query(
+    `
+    SELECT
+      a.id,
+      a.user_id,
+      TO_CHAR(COALESCE(a.time_in::date, a.attendance_date), 'YYYY-MM-DD') AS day,
+      s.id AS student_id,
+      s.first_name,
+      s.middle_name,
+      s.last_name,
+      p.user_id AS parent_user_id
+    FROM attendance a
+    LEFT JOIN students s ON s.user_id = a.user_id
+    LEFT JOIN parents p ON p.id = s.parent_id
+    WHERE a.id::text = $1::text
+    LIMIT 1
+    `,
+    [String(attendanceId)]
+  );
+  const record = recordResult.rows[0];
+  if (!record) return;
+
+  const day = formatDay(record.day);
+  const what = changes.length > 0 ? `${changes.join('; ')}. ` : '';
+  const childName = [record.first_name, record.middle_name, record.last_name]
+    .map((part) => String(part ?? '').trim())
+    .filter(Boolean)
+    .join(' ');
+
+  const recipientIds = [record.user_id];
+  const titles = ['Your attendance was corrected'];
+  const messages = [
+    `The school corrected your attendance on ${day}. ${what}Reason: ${remarks}`
+  ];
+  if (record.parent_user_id) {
+    recipientIds.push(record.parent_user_id);
+    titles.push(`${childName || 'Your child'}'s attendance was corrected`);
+    messages.push(
+      `The school corrected ${childName || 'your child'}'s attendance on ${day}. ` +
+        `${what}Reason: ${remarks}`
+    );
+  }
+
+  const metadata = {
+    event: 'attendance_corrected',
+    attendance_id: record.id,
+    student_user_id: record.user_id,
+    student_id: record.student_id ?? null,
+    remarks,
+    changes,
+    corrected_by: adminUserId ?? null
+  };
+
+  await pool.query(
+    `
+    INSERT INTO notifications (user_id, title, message, type, metadata)
+    SELECT t.user_id, t.title, t.message, $4::varchar, $5::jsonb
+    FROM unnest($1::uuid[], $2::text[], $3::text[])
+      AS t(user_id, title, message)
+    `,
+    [recipientIds, titles, messages, NOTIFICATION_CATEGORY, JSON.stringify(metadata)]
+  );
+};
+
 module.exports = {
-  createAttendanceNotifications
+  createAttendanceNotifications,
+  createCorrectionNotifications
 };

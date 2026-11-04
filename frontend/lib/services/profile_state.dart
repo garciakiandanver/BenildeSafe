@@ -18,7 +18,6 @@ class ProfileState extends ChangeNotifier {
   String studentNumber = '';
   String course = '';
   String yearLevel = '';
-  String section = '';
   String employeeNumber = '';
 
   void setUser({
@@ -45,7 +44,6 @@ class ProfileState extends ChangeNotifier {
     studentNumber = '';
     course = '';
     yearLevel = '';
-    section = '';
     employeeNumber = '';
   }
 
@@ -66,7 +64,6 @@ class ProfileState extends ChangeNotifier {
       studentNumber = text('student_number');
       course = text('course');
       yearLevel = text('year_level');
-      section = text('section');
       employeeNumber = text('employee_number');
       setUser(
         fullName: newFull.isNotEmpty ? newFull : fullName,

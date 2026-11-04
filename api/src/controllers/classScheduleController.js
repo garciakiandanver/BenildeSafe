@@ -1,10 +1,12 @@
 const ExcelJS = require('exceljs');
 const pool = require('../config/database');
 
+// Section is no longer part of a schedule. A college class is identified by
+// its course and year level alone. The database column is kept but always
+// blank, and an older file that still carries a Section header has it ignored.
 const columns = [
   'course',
   'year_level',
-  'section',
   'subject',
   'weekday',
   'start_time',
@@ -156,7 +158,6 @@ const parseSourceTimetable = (
     normalizedRows.push([
       courseCode,
       yearLevel,
-      '',
       subject,
       weekday,
       startTime,
@@ -224,9 +225,8 @@ const parseRows = (rows, courseCode, defaultCampusCode = '') => {
         rowNumber: index + 2,
         course: rowCourse,
         yearLevel: get('year_level').toUpperCase(),
-        section: /^null$/i.test(get('section'))
-          ? ''
-          : get('section').toUpperCase(),
+        // Kept so the database column still receives a value.
+        section: '',
         subject: get('subject').toUpperCase(),
         weekday: parseWeekday(get('weekday')),
         startTime: normalizeTime(get('start_time')),
@@ -364,7 +364,6 @@ const getClassSchedules = async (req, res) => {
         cs.id,
         cs.course,
         cs.year_level,
-        cs.section,
         cs.subject,
         cs.weekday,
         cs.start_time,
@@ -391,7 +390,7 @@ const getClassSchedules = async (req, res) => {
           (SELECT id FROM academic_terms WHERE is_current = TRUE)
         )
         AND NOT cs.is_archived
-      ORDER BY cs.course, cs.year_level, cs.section, cs.weekday, cs.start_time
+      ORDER BY cs.course, cs.year_level, cs.weekday, cs.start_time
       `,
       [courseCode, termId]
     );
@@ -862,7 +861,6 @@ const updateClassSchedule = async (req, res) => {
   const {
     course,
     year_level: yearLevel,
-    section,
     subject,
     weekday,
     start_time: rawStartTime,
@@ -876,7 +874,8 @@ const updateClassSchedule = async (req, res) => {
   const normalized = {
     course: String(course ?? '').trim().toUpperCase(),
     yearLevel: String(yearLevel ?? '').trim().toUpperCase(),
-    section: String(section ?? '').trim().toUpperCase(),
+    // Any section sent by an older client is dropped: the column is now blank.
+    section: '',
     subject: String(subject ?? '').trim().toUpperCase(),
     weekday: parseWeekday(weekday),
     startTime: normalizeTime(rawStartTime),
@@ -974,12 +973,19 @@ const updateClassSchedule = async (req, res) => {
           (
             UPPER(course) = $3
             AND UPPER(year_level) = $4
-            AND UPPER(section) = $5
           )
-          OR ($6::uuid IS NOT NULL AND teacher_user_id = $6)
+          -- The same teacher at exactly the same hours is one merged class
+          -- (several courses or year levels taught together), which the
+          -- school allows. Only a teacher in two different time slots that
+          -- overlap is a clash.
+          OR (
+            $5::uuid IS NOT NULL
+            AND teacher_user_id = $5
+            AND NOT (start_time = $6::time AND end_time = $7::time)
+          )
         )
-        AND start_time < $8::time
-        AND end_time > $7::time
+        AND start_time < $7::time
+        AND end_time > $6::time
       LIMIT 1
       `,
       [
@@ -987,7 +993,6 @@ const updateClassSchedule = async (req, res) => {
         scheduleId,
         normalized.course,
         normalized.yearLevel,
-        normalized.section,
         teacherUserId,
         normalized.startTime,
         normalized.endTime
@@ -996,7 +1001,7 @@ const updateClassSchedule = async (req, res) => {
     if (overlap.rowCount > 0) {
       await client.query('ROLLBACK');
       return res.status(409).json({
-        message: 'This time overlaps another schedule for the same course/year/section or teacher.'
+        message: 'This time overlaps another class of the same course and year level, or another class of the same teacher at different hours.'
       });
     }
 
@@ -1266,7 +1271,7 @@ const importClassSchedules = async (req, res) => {
       }
 
       const key = [
-        schedule.course, schedule.yearLevel, schedule.section,
+        schedule.course, schedule.yearLevel,
         schedule.subject, schedule.weekday, schedule.startTime
       ].join('|');
       if (uploadedKeys.has(key)) {
@@ -1275,9 +1280,7 @@ const importClassSchedules = async (req, res) => {
       }
       uploadedKeys.add(key);
 
-      const groupKey = [
-        schedule.course, schedule.yearLevel, schedule.section
-      ].join('|');
+      const groupKey = [schedule.course, schedule.yearLevel].join('|');
       const startsAt = schedule.startTime;
       const endsAt = schedule.endTime;
       const uploadedConflict = processedSchedules.find((previous) =>
@@ -1352,36 +1355,40 @@ const importClassSchedules = async (req, res) => {
         SELECT id
         FROM class_schedules
         WHERE weekday = $1
-          AND academic_term_id = $10::uuid
+          AND academic_term_id = $9::uuid
           AND NOT is_archived
           AND (
             (
               UPPER(course) = $2
               AND UPPER(year_level) = $3
-              AND UPPER(section) = $4
             )
-            OR ($5::uuid IS NOT NULL AND teacher_user_id = $5)
+            -- Same teacher, same hours: a merged class, allowed. See the
+            -- note in updateClassSchedule above.
+            OR (
+              $4::uuid IS NOT NULL
+              AND teacher_user_id = $4
+              AND NOT (start_time = $7::time AND end_time = $8::time)
+            )
           )
           AND NOT (
             UPPER(course) = $2
             AND UPPER(year_level) = $3
-            AND UPPER(section) = $4
-            AND UPPER(subject) = $6
-            AND start_time = $7::time
+            AND UPPER(subject) = $5
+            AND start_time = $6::time
           )
-          AND start_time < $9::time
-          AND end_time > $8::time
+          AND start_time < $8::time
+          AND end_time > $7::time
         LIMIT 1
         `,
         [
           schedule.weekday, schedule.course, schedule.yearLevel,
-          schedule.section, schedule.teacherUserId, schedule.subject,
+          schedule.teacherUserId, schedule.subject,
           schedule.startTime, schedule.startTime, schedule.endTime,
           academicTermId
         ]
       );
       if (overlap.rows.length > 0) {
-        errors.push(`Row ${schedule.rowNumber}: this class overlaps another schedule for the same section or teacher.`);
+        errors.push(`Row ${schedule.rowNumber}: this class overlaps another class of the same course and year level, or another class of the same teacher at different hours.`);
       }
     }
     if (errors.length > 0) {

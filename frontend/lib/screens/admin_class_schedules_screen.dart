@@ -5,6 +5,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../services/api_service.dart';
+import '../widgets/app_ui.dart';
 import 'admin_departments_screen.dart';
 
 class AdminClassSchedulesScreen extends StatefulWidget {
@@ -49,6 +50,15 @@ class _AdminClassSchedulesScreenState extends State<AdminClassSchedulesScreen> {
   String _selectedYear = 'all';
   final _lateAfterMinutesController = TextEditingController(text: '30');
 
+  // Finding one class among many, to edit it: words typed in the search
+  // box, and the day and campus filters beside the year.
+  final _scheduleSearchController = TextEditingController();
+  String _scheduleSearch = '';
+  static const _anyDay = 'Any day';
+  static const _anyCampus = 'Any campus';
+  String _selectedDay = _anyDay;
+  String _selectedCampus = _anyCampus;
+
   @override
   void initState() {
     super.initState();
@@ -58,6 +68,7 @@ class _AdminClassSchedulesScreenState extends State<AdminClassSchedulesScreen> {
   @override
   void dispose() {
     _lateAfterMinutesController.dispose();
+    _scheduleSearchController.dispose();
     super.dispose();
   }
 
@@ -432,7 +443,7 @@ class _AdminClassSchedulesScreenState extends State<AdminClassSchedulesScreen> {
       final savedFile = await FilePicker.saveFile(
         fileName: 'class_schedule_template.csv',
         bytes: utf8.encode(
-          'course,year_level,section,subject,weekday,start_time,late_after,end_time,teacher_email,campus_code\r\n',
+          'course,year_level,subject,weekday,start_time,late_after,end_time,teacher_email,campus_code\r\n',
         ),
         mimeType: 'text/csv',
         dialogTitle: 'Save class schedule template',
@@ -776,9 +787,6 @@ class _AdminClassSchedulesScreenState extends State<AdminClassSchedulesScreen> {
     final yearController = TextEditingController(
       text: schedule['year_level']?.toString() ?? '',
     );
-    final sectionController = TextEditingController(
-      text: schedule['section']?.toString() ?? '',
-    );
     final subjectController = TextEditingController(
       text: schedule['subject']?.toString() ?? '',
     );
@@ -823,11 +831,6 @@ class _AdminClassSchedulesScreenState extends State<AdminClassSchedulesScreen> {
                     children: [
                       _editField(courseController, 'Course'),
                       _editField(yearController, 'Year level'),
-                      _editField(
-                        sectionController,
-                        'Section (leave blank if none)',
-                        requiredField: false,
-                      ),
                       _editField(subjectController, 'Subject'),
                       DropdownButtonFormField<int>(
                         initialValue: selectedWeekday,
@@ -902,7 +905,6 @@ class _AdminClassSchedulesScreenState extends State<AdminClassSchedulesScreen> {
                   Navigator.pop(dialogContext, {
                     'course': courseController.text.trim(),
                     'year_level': yearController.text.trim(),
-                    'section': sectionController.text.trim(),
                     'subject': subjectController.text.trim(),
                     'weekday': selectedWeekday,
                     'campus_code': selectedCampusCode,
@@ -948,7 +950,6 @@ class _AdminClassSchedulesScreenState extends State<AdminClassSchedulesScreen> {
     } finally {
       courseController.dispose();
       yearController.dispose();
-      sectionController.dispose();
       subjectController.dispose();
       startController.dispose();
       lateController.dispose();
@@ -1036,11 +1037,26 @@ class _AdminClassSchedulesScreenState extends State<AdminClassSchedulesScreen> {
     final courseCode = widget.course?['course_code']?.toString();
     return Scaffold(
       appBar: AppBar(
-        title: Text(
-          widget.course == null
-              ? 'Departments & courses'
-              : '${widget.course!['course_name']} ($courseCode)',
-        ),
+        // The code leads ("BSIT"), with the full name under it in small
+        // type. The full name alone ran off the edge of a phone.
+        title: widget.course == null
+            ? const Text('Departments & courses')
+            : Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    courseCode ?? '',
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  Text(
+                    widget.course!['course_name']?.toString() ?? '',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
       ),
       floatingActionButton: widget.course == null
           ? FloatingActionButton.extended(
@@ -1068,129 +1084,244 @@ class _AdminClassSchedulesScreenState extends State<AdminClassSchedulesScreen> {
     );
   }
 
+  // ── Layout helpers ────────────────────────────────────────────────
+
+  /// How many columns of cards fit: three on a wide laptop, two on a small
+  /// window or tablet, one on a phone.
+  int _columnsFor(double width) => width >= 1000
+      ? 3
+      : width >= 640
+      ? 2
+      : 1;
+
+  /// Lays [items] out in [columns] equal columns, in reading order.
+  Widget _grid(int columns, List<Widget> items) {
+    if (columns == 1) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (final item in items)
+            Padding(
+              padding: const EdgeInsets.only(bottom: AppSpace.md),
+              child: item,
+            ),
+        ],
+      );
+    }
+    final lanes = List.generate(columns, (_) => <Widget>[]);
+    for (var i = 0; i < items.length; i++) {
+      lanes[i % columns].add(
+        Padding(
+          padding: const EdgeInsets.only(bottom: AppSpace.md),
+          child: items[i],
+        ),
+      );
+    }
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (var c = 0; c < columns; c++) ...[
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: lanes[c],
+            ),
+          ),
+          if (c != columns - 1) const SizedBox(width: AppSpace.md),
+        ],
+      ],
+    );
+  }
+
+  /// Chips in one line that scrolls sideways on a narrow screen. Wrapped,
+  /// "Year 3" and "Year 4" dropped to a second line on a phone.
+  Widget _chipRow(List<Widget> chips) => SingleChildScrollView(
+    scrollDirection: Axis.horizontal,
+    child: Row(
+      children: [
+        for (var i = 0; i < chips.length; i++) ...[
+          if (i > 0) const SizedBox(width: AppSpace.sm),
+          chips[i],
+        ],
+      ],
+    ),
+  );
+
+  /// Keeps a page to a readable width on a laptop and centres it.
+  Widget _page(Widget child) => Align(
+    alignment: Alignment.topCenter,
+    child: ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 1200),
+      child: child,
+    ),
+  );
+
+  static const _smallWords = {
+    'a', 'an', 'and', 'as', 'at', 'by', 'for', 'in', 'of', 'on', 'or', 'the',
+    'to', 'with', 'incl.', '(incl.',
+  };
+  static const _keepUpper = {
+    'HCI', 'IT', 'PE', 'NSTP', 'MICE', 'ABM', 'UI', 'UX', 'NC', 'II', 'III',
+    'IV', 'TPS', 'FOS', 'FO', 'HRM',
+  };
+
+  /// The stored subject is in capitals ("CC101 COMPUTER PROGRAMMING 1").
+  /// Splits off the code and gives the name ordinary capitals:
+  /// ("CC101", "Computer Programming 1").
+  (String, String) _splitSubject(String subject) {
+    final words = subject.trim().split(RegExp(r'\s+'));
+    if (words.isEmpty || words.first.isEmpty) return ('', subject);
+    var codeLength = 0;
+    if (RegExp(r'^[A-Z]{2,}[A-Z-]*\d+[A-Z]?$').hasMatch(words.first)) {
+      codeLength = 1;
+    } else if (words.length > 1 &&
+        RegExp(r'^[A-Z]{2,}$').hasMatch(words[0]) &&
+        RegExp(r'^\d+$').hasMatch(words[1])) {
+      codeLength = 2; // "NSTP 1"
+    }
+    final code = words.take(codeLength).join(' ');
+    final rest = words.skip(codeLength).toList();
+    final name = [
+      for (var i = 0; i < rest.length; i++) _niceWord(rest[i], i == 0),
+    ].join(' ');
+    return (code, name.isEmpty ? subject : name);
+  }
+
+  String _niceWord(String word, bool first) {
+    final bare = word.replaceAll(RegExp(r'[^A-Za-z]'), '');
+    if (_keepUpper.contains(bare.toUpperCase()) && bare == bare.toUpperCase()) {
+      return word;
+    }
+    if (RegExp(r'\d').hasMatch(word)) return word.toUpperCase(); // "3D"
+    final lower = word.toLowerCase();
+    if (!first && _smallWords.contains(lower)) return lower;
+    // The first letter, not the first character: "(MEETING," becomes
+    // "(Meeting,", not "(meeting,".
+    return lower
+        .split('-')
+        .map(
+          (p) => p.replaceFirstMapped(
+            RegExp('[a-z]'),
+            (m) => m[0]!.toUpperCase(),
+          ),
+        )
+        .join('-');
+  }
+
+  // ── Departments & courses ─────────────────────────────────────────
+
   Widget _buildCoursesBody() {
     if (_isLoading) return const Center(child: CircularProgressIndicator());
     if (_error.isNotEmpty) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(_error, textAlign: TextAlign.center),
-            const SizedBox(height: 12),
-            OutlinedButton(
-              onPressed: _loadSchedules,
-              child: const Text('Retry'),
-            ),
-          ],
+      return EmptyState(
+        icon: Icons.cloud_off_outlined,
+        title: 'Could not load courses',
+        message: _error,
+        action: OutlinedButton(
+          onPressed: _loadSchedules,
+          child: const Text('Try again'),
         ),
       );
     }
     return RefreshIndicator(
       onRefresh: _loadSchedules,
-      child: ListView(
-        physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.all(12),
-        children: [
-          _buildTermControls(),
-          Card(
-            margin: const EdgeInsets.only(bottom: 8),
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Whole-school timetable',
-                    style: TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                  const SizedBox(height: 4),
-                  const Text(
-                    'Upload one CSV or Excel file for every course. Fill the course and campus_code columns on every row. Each course must already be added below.',
-                    style: TextStyle(color: Colors.grey, fontSize: 12),
-                  ),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 8,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final pad = constraints.maxWidth < 400 ? AppSpace.md : AppSpace.xl;
+          return ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: EdgeInsets.fromLTRB(pad, AppSpace.md, pad, 96),
+            children: [
+              _page(
+                LayoutBuilder(
+                  builder: (context, inner) => Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      FilledButton.icon(
-                        onPressed: _isUploading || !_selectedTermIsCurrent
-                            ? null
-                            : _uploadSchedule,
-                        icon: const Icon(Icons.upload_file),
-                        label: Text(
-                          _isUploading
-                              ? 'Uploading...'
-                              : 'Upload whole-school timetable',
-                        ),
-                      ),
-                      TextButton.icon(
-                        onPressed: _isUploading || !_selectedTermIsCurrent
-                            ? null
-                            : _downloadScheduleTemplate,
-                        icon: const Icon(Icons.download_outlined),
-                        label: const Text('Download CSV template'),
-                      ),
+                      Reveal(order: 0, child: _buildTermControls()),
+                      const SizedBox(height: AppSpace.md),
+                      Reveal(order: 1, child: _wholeSchoolPanel()),
+                      const SizedBox(height: AppSpace.lg),
+                      Reveal(order: 2, child: _buildDepartmentFilter()),
+                      ..._buildCourseGroups(inner.maxWidth),
                     ],
                   ),
-                ],
+                ),
               ),
-            ),
-          ),
-          _buildDepartmentFilter(),
-          ..._buildCourseGroups(),
-        ],
+            ],
+          );
+        },
       ),
     );
   }
 
-  Widget _buildDepartmentFilter() {
-    final unassigned = _courses
-        .where((course) => course['department_id'] == null)
-        .length;
-
-    Widget chip(String value, String label) => Padding(
-      padding: const EdgeInsets.only(right: 8),
-      child: ChoiceChip(
-        label: Text(label),
-        selected: _selectedDepartment == value,
-        onSelected: (_) => setState(() => _selectedDepartment = value),
-      ),
-    );
-
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 4),
-      child: Column(
+  Widget _wholeSchoolPanel() {
+    final theme = Theme.of(context);
+    final canUpload = !_isUploading && _selectedTermIsCurrent;
+    return AppPanel(
+      child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              const Expanded(
-                child: Padding(
-                  padding: EdgeInsets.only(left: 4),
-                  child: Text(
-                    'Filter by department',
-                    style: TextStyle(fontWeight: FontWeight.w600),
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: theme.colorScheme.primary.withValues(alpha: 0.10),
+              borderRadius: BorderRadius.circular(AppRadius.block),
+            ),
+            child: Icon(
+              Icons.calendar_month_outlined,
+              color: theme.colorScheme.primary,
+            ),
+          ),
+          const SizedBox(width: AppSpace.md),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Whole-school timetable',
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w800,
                   ),
                 ),
-              ),
-              TextButton.icon(
-                onPressed: _isUploading ? null : _manageDepartments,
-                icon: const Icon(Icons.apartment_outlined, size: 18),
-                label: const Text('Manage departments'),
-              ),
-            ],
-          ),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                chip('all', 'All (${_courses.length})'),
-                for (final item in _departments)
-                  chip(
-                    item['id'].toString(),
-                    '${item['department_code']} (${item['course_count'] ?? 0})',
+                const SizedBox(height: 2),
+                Text(
+                  'One file for every course. Each row needs its course and '
+                  'campus code, and each course must be added below first.',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                    height: 1.4,
                   ),
-                if (unassigned > 0) chip('none', 'No department ($unassigned)'),
+                ),
+                const SizedBox(height: AppSpace.md),
+                Row(
+                  children: [
+                    Expanded(
+                      child: FilledButton.icon(
+                      onPressed: canUpload ? _uploadSchedule : null,
+                      icon: _isUploading
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                          : const Icon(Icons.upload_file, size: 18),
+                      label: Text(_isUploading ? 'Uploading...' : 'Upload'),
+                      ),
+                    ),
+                    const SizedBox(width: AppSpace.sm),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: canUpload ? _downloadScheduleTemplate : null,
+                        icon: const Icon(Icons.download_outlined, size: 18),
+                        label: const Text('Template'),
+                      ),
+                    ),
+                  ],
+                ),
               ],
             ),
           ),
@@ -1199,50 +1330,143 @@ class _AdminClassSchedulesScreenState extends State<AdminClassSchedulesScreen> {
     );
   }
 
+  Widget _buildDepartmentFilter() {
+    final theme = Theme.of(context);
+    final unassigned = _courses
+        .where((course) => course['department_id'] == null)
+        .length;
+
+    Widget chip(String value, String label) => ChoiceChip(
+      label: Text(label),
+      selected: _selectedDepartment == value,
+      onSelected: (_) => setState(() => _selectedDepartment = value),
+    );
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Courses',
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+            TextButton.icon(
+              onPressed: _isUploading ? null : _manageDepartments,
+              icon: const Icon(Icons.apartment_outlined, size: 18),
+              label: const Text('Departments'),
+            ),
+          ],
+        ),
+        const SizedBox(height: AppSpace.sm),
+        _chipRow([
+          chip('all', 'All (${_courses.length})'),
+          for (final item in _departments)
+            chip(
+              item['id'].toString(),
+              '${item['department_code']} (${item['course_count'] ?? 0})',
+            ),
+          if (unassigned > 0) chip('none', 'No department ($unassigned)'),
+        ]),
+      ],
+    );
+  }
+
   // Courses grouped under their department (filtered by the chips above).
-  List<Widget> _buildCourseGroups() {
+  List<Widget> _buildCourseGroups(double width) {
+    final theme = Theme.of(context);
     final courses = _courses
         .map((item) => Map<String, dynamic>.from(item as Map))
         .toList();
 
     if (_departments.isEmpty && courses.isEmpty) {
       return const [
-        Padding(
-          padding: EdgeInsets.only(top: 48),
-          child: Center(
-            child: Text(
-              'No departments or courses yet. Tap "Manage departments" to add a department, then add its courses.',
-              textAlign: TextAlign.center,
-            ),
-          ),
+        SizedBox(height: AppSpace.xl),
+        EmptyState(
+          icon: Icons.apartment_outlined,
+          title: 'No departments or courses yet',
+          message: 'Tap "Departments" to add one, then add its courses.',
         ),
       ];
     }
 
+    final columns = _columnsFor(width);
     final widgets = <Widget>[];
-    void addGroup(String title, List<Map<String, dynamic>> group) {
+    var order = 3;
+    void addGroup(String name, String code, List<Map<String, dynamic>> group) {
+      final classes = group.fold<num>(
+        0,
+        (sum, c) => sum + (c['schedule_count'] as num? ?? 0),
+      );
       widgets.add(
         Padding(
-          padding: const EdgeInsets.fromLTRB(4, 14, 4, 6),
-          child: Text(
-            title,
-            style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
+          padding: const EdgeInsets.fromLTRB(0, AppSpace.xl, 0, AppSpace.md),
+          child: Row(
+            children: [
+              if (code.isNotEmpty) ...[
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: AppSpace.sm,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.primary,
+                    borderRadius: BorderRadius.circular(AppRadius.pill),
+                  ),
+                  child: Text(
+                    code,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: AppSpace.sm),
+              ],
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      name,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    Text(
+                      '${group.length} ${group.length == 1 ? 'course' : 'courses'}'
+                      '  ·  $classes ${classes == 1 ? 'class' : 'classes'}',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
         ),
       );
-      if (group.isEmpty) {
-        widgets.add(
-          const Padding(
-            padding: EdgeInsets.fromLTRB(4, 0, 4, 8),
-            child: Text(
-              'No courses yet. Tap "Add course" to add one.',
-              style: TextStyle(color: Colors.grey),
-            ),
-          ),
-        );
-      } else {
-        widgets.addAll(group.map(_buildCourseTile));
-      }
+      widgets.add(
+        Reveal(
+          order: order++,
+          child: group.isEmpty
+              ? Text(
+                  'No courses yet. Tap "Add course" to add one.',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                )
+              : _grid(columns, group.map(_buildCourseTile).toList()),
+        ),
+      );
     }
 
     for (final item in _departments) {
@@ -1250,7 +1474,8 @@ class _AdminClassSchedulesScreenState extends State<AdminClassSchedulesScreen> {
       final id = department['id'].toString();
       if (_selectedDepartment != 'all' && _selectedDepartment != id) continue;
       addGroup(
-        '${department['department_name']} (${department['department_code']})',
+        department['department_name']?.toString() ?? '',
+        department['department_code']?.toString() ?? '',
         courses.where((c) => c['department_id']?.toString() == id).toList(),
       );
     }
@@ -1259,51 +1484,137 @@ class _AdminClassSchedulesScreenState extends State<AdminClassSchedulesScreen> {
       final unassigned = courses
           .where((c) => c['department_id'] == null)
           .toList();
-      if (unassigned.isNotEmpty) addGroup('No department', unassigned);
+      if (unassigned.isNotEmpty) addGroup('No department', '', unassigned);
     }
     return widgets;
   }
 
   Widget _buildCourseTile(Map<String, dynamic> course) {
-    final scheduleCount = course['schedule_count'] as num? ?? 0;
-    return Card(
-      child: ListTile(
-        leading: const CircleAvatar(child: Icon(Icons.school)),
-        title: Text(course['course_name']?.toString() ?? ''),
-        subtitle: Text(
-          '${course['course_code']} • $scheduleCount class schedules',
+    final theme = Theme.of(context);
+    final scheduleCount = (course['schedule_count'] as num? ?? 0).toInt();
+    final code = course['course_code']?.toString() ?? '';
+    Future<void> open() async {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => AdminClassSchedulesScreen(
+            token: widget.token,
+            course: course,
+            termId: _selectedTermId,
+          ),
         ),
-        trailing: PopupMenuButton<String>(
-          tooltip: 'Course options',
-          enabled: !_isUploading,
-          onSelected: (value) {
-            if (value == 'edit') {
-              _editCourse(course);
-            } else {
-              _deleteCourse(course);
-            }
-          },
-          itemBuilder: (context) => const [
-            PopupMenuItem(value: 'edit', child: Text('Edit')),
-            PopupMenuItem(value: 'delete', child: Text('Delete')),
-          ],
+      );
+      if (mounted) await _loadSchedules();
+    }
+
+    final empty = scheduleCount == 0;
+    return Hoverable(
+      onTap: open,
+      builder: (context, hovered) => AppPanel(
+        hovered: hovered,
+        padding: const EdgeInsets.fromLTRB(
+          AppSpace.md,
+          AppSpace.md,
+          AppSpace.xs,
+          AppSpace.md,
         ),
-        onTap: () async {
-          await Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => AdminClassSchedulesScreen(
-                token: widget.token,
-                course: course,
-                termId: _selectedTermId,
+        child: Row(
+          children: [
+            // The code is what people say ("BSIT"), so it leads.
+            Container(
+              width: 64,
+              height: 52,
+              alignment: Alignment.center,
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.primary.withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(AppRadius.block),
+              ),
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(
+                  code,
+                  style: TextStyle(
+                    color: theme.colorScheme.primary,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 15,
+                  ),
+                ),
               ),
             ),
-          );
-          if (mounted) await _loadSchedules();
-        },
+            const SizedBox(width: AppSpace.md),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    course['course_name']?.toString() ?? '',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                      height: 1.25,
+                    ),
+                  ),
+                  const SizedBox(height: AppSpace.xs),
+                  Row(
+                    children: [
+                      Icon(
+                        empty
+                            ? Icons.event_busy_outlined
+                            : Icons.event_note_outlined,
+                        size: 14,
+                        color: empty
+                            ? StatusTone.forLevel(
+                                context,
+                                StatusLevel.caution,
+                              ).content
+                            : theme.colorScheme.onSurfaceVariant,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        empty
+                            ? 'No classes yet'
+                            : '$scheduleCount ${scheduleCount == 1 ? 'class' : 'classes'}',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: empty
+                              ? StatusTone.forLevel(
+                                  context,
+                                  StatusLevel.caution,
+                                ).content
+                              : theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            PopupMenuButton<String>(
+              tooltip: 'Course options',
+              enabled: !_isUploading,
+              onSelected: (value) {
+                if (value == 'edit') {
+                  _editCourse(course);
+                } else {
+                  _deleteCourse(course);
+                }
+              },
+              itemBuilder: (context) => const [
+                PopupMenuItem(value: 'edit', child: Text('Edit')),
+                PopupMenuItem(value: 'delete', child: Text('Delete')),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
+
+  /// "2026-2027 • 1st Semester (Current)".
+  String _termLabel(Map<String, dynamic> term) =>
+      '${term['school_year']} • ${term['semester']}'
+      '${term['is_current'] == true ? ' (Current)' : ''}';
 
   Widget _buildTermControls() {
     final selectedTerm = _terms
@@ -1315,58 +1626,350 @@ class _AdminClassSchedulesScreenState extends State<AdminClassSchedulesScreen> {
     final selectedLabel = selectedTerm.isEmpty
         ? 'No academic term'
         : '${selectedTerm['school_year']} • ${selectedTerm['semester']}';
-    return Card(
-      margin: const EdgeInsets.only(bottom: 8),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        child: Row(
-          children: [
-            Expanded(
-              child: _terms.isEmpty
-                  ? Text(selectedLabel)
-                  : DropdownButtonFormField<String>(
-                      initialValue: _selectedTermId,
-                      decoration: const InputDecoration(
-                        labelText: 'Academic term',
-                        border: InputBorder.none,
-                        isDense: true,
-                      ),
-                      items: _terms.map((item) {
-                        final term = Map<String, dynamic>.from(item as Map);
-                        final label =
-                            '${term['school_year']} • ${term['semester']}'
-                            '${term['is_current'] == true ? ' (Current)' : ''}';
-                        return DropdownMenuItem(
-                          value: term['id'].toString(),
-                          child: Text(label, overflow: TextOverflow.ellipsis),
-                        );
-                      }).toList(),
-                      onChanged: _isUploading || _isLoading
-                          ? null
-                          : _selectTerm,
+    return AppPanel(
+      padding: const EdgeInsets.fromLTRB(AppSpace.lg, 6, AppSpace.xs, 6),
+      child: Row(
+        children: [
+          Icon(
+            Icons.school_outlined,
+            size: 20,
+            color: Theme.of(context).colorScheme.primary,
+          ),
+          const SizedBox(width: AppSpace.md),
+          Expanded(
+            child: _terms.isEmpty
+                ? Text(
+                    selectedLabel,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  )
+                : DropdownButtonFormField<String>(
+                    initialValue: _selectedTermId,
+                    // Without this the closed field takes the width of the
+                    // longest term in the list, which on a phone runs under
+                    // the two buttons beside it.
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Academic term',
+                      border: InputBorder.none,
+                      isDense: true,
                     ),
+                    selectedItemBuilder: (context) => _terms.map((item) {
+                      final term = Map<String, dynamic>.from(item as Map);
+                      return Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          _termLabel(term),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                      );
+                    }).toList(),
+                    items: _terms.map((item) {
+                      final term = Map<String, dynamic>.from(item as Map);
+                      return DropdownMenuItem(
+                        value: term['id'].toString(),
+                        child: Text(
+                          _termLabel(term),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      );
+                    }).toList(),
+                    onChanged: _isUploading || _isLoading ? null : _selectTerm,
+                  ),
+          ),
+          IconButton(
+            tooltip: 'Edit selected term',
+            onPressed: _terms.isEmpty || _isUploading || _isLoading
+                ? null
+                : _editAcademicTerm,
+            icon: const Icon(Icons.edit_outlined),
+          ),
+          IconButton(
+            tooltip: 'Start a new semester',
+            onPressed: _isUploading || _isLoading ? null : _createAcademicTerm,
+            icon: const Icon(Icons.add_circle_outline),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── One course's week ─────────────────────────────────────────────
+
+  Future<void> _showUploadHelp() async {
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('How to upload'),
+        content: SizedBox(
+          width: 480,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'A CSV or Excel file, one row per class, with these columns:',
+                ),
+                const SizedBox(height: AppSpace.sm),
+                const SelectableText(
+                  'course, year_level, subject, weekday, start_time, '
+                  'late_after, end_time, teacher_email, campus_code',
+                  style: TextStyle(fontFamily: 'monospace', fontSize: 12),
+                ),
+                const SizedBox(height: AppSpace.md),
+                const Text(
+                  'campus_code must match a campus that has a boundary. The '
+                  'registrar\'s year-by-year timetable can also be uploaded '
+                  'as it is; then the late cutoff below is used.',
+                  style: TextStyle(height: 1.4),
+                ),
+                const SizedBox(height: AppSpace.lg),
+                TextField(
+                  enabled: _selectedTermIsCurrent,
+                  controller: _lateAfterMinutesController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Late cutoff (minutes)',
+                    helperText: 'For the registrar\'s timetable; default 30.',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+              ],
             ),
-            IconButton(
-              tooltip: 'Edit selected term',
-              onPressed: _terms.isEmpty || _isUploading || _isLoading
-                  ? null
-                  : _editAcademicTerm,
-              icon: const Icon(Icons.edit_outlined),
-            ),
-            IconButton(
-              tooltip: 'Start a new semester',
-              onPressed: _isUploading || _isLoading
-                  ? null
-                  : _createAcademicTerm,
-              icon: const Icon(Icons.add_circle_outline),
-            ),
-          ],
+          ),
         ),
+        actions: [
+          TextButton.icon(
+            onPressed: _isUploading || !_selectedTermIsCurrent
+                ? null
+                : () {
+                    Navigator.pop(dialogContext);
+                    _downloadScheduleTemplate();
+                  },
+            icon: const Icon(Icons.download_outlined),
+            label: const Text('CSV template'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Done'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// One class in a day: the time on the left, the subject and its details
+  /// on the right.
+  Widget _classRow(Map<String, dynamic> schedule, {required bool showYear}) {
+    final theme = Theme.of(context);
+    final muted = theme.colorScheme.onSurfaceVariant;
+    final (code, name) = _splitSubject(schedule['subject']?.toString() ?? '');
+    final campus = schedule['campus_name']?.toString() ?? 'No campus';
+    final teacher =
+        schedule['teacher_name']?.toString() ??
+        schedule['teacher_email']?.toString() ??
+        '';
+    final caution = StatusTone.forLevel(context, StatusLevel.caution).content;
+
+    Widget detail(IconData icon, String text) => Row(
+      children: [
+        Icon(icon, size: 13, color: muted),
+        const SizedBox(width: 4),
+        Expanded(
+          child: Text(
+            text,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.bodySmall?.copyWith(color: muted),
+          ),
+        ),
+      ],
+    );
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: AppSpace.sm),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 70,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  _formatTime(schedule['start_time']),
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
+                ),
+                Text(
+                  _formatTime(schedule['end_time']),
+                  style: theme.textTheme.bodySmall?.copyWith(color: muted),
+                ),
+              ],
+            ),
+          ),
+          Container(
+            width: 3,
+            height: 72,
+            margin: const EdgeInsets.only(right: AppSpace.md),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.primary.withValues(alpha: 0.35),
+              borderRadius: BorderRadius.circular(AppRadius.pill),
+            ),
+          ),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (code.isNotEmpty)
+                  Text(
+                    showYear
+                        ? '$code  ·  Year ${schedule['year_level']}'
+                        : code,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: theme.colorScheme.primary,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.3,
+                    ),
+                  ),
+                Text(
+                  name,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                    height: 1.25,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                // One detail per line, in the same order for every class.
+                // Wrapped side by side, they broke at different places on
+                // each card and nothing lined up.
+                detail(Icons.location_on_outlined, campus),
+                const SizedBox(height: 2),
+                detail(
+                  Icons.person_outline_rounded,
+                  teacher.isEmpty ? 'No teacher yet' : teacher,
+                ),
+                const SizedBox(height: 2),
+                Row(
+                  children: [
+                    Icon(Icons.schedule_rounded, size: 13, color: caution),
+                    const SizedBox(width: 4),
+                    Text(
+                      'Late after ${_formatTime(schedule['late_after'])}',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: caution,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          PopupMenuButton<String>(
+            tooltip: 'Class options',
+            enabled: !_isUploading && !_isLoading && _selectedTermIsCurrent,
+            padding: EdgeInsets.zero,
+            onSelected: (action) {
+              if (action == 'edit') {
+                _editSchedule(schedule);
+              } else if (action == 'delete') {
+                _deleteSchedule(schedule);
+              }
+            },
+            itemBuilder: (context) => const [
+              PopupMenuItem(
+                value: 'edit',
+                child: ListTile(
+                  leading: Icon(Icons.edit_outlined),
+                  title: Text('Edit'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              PopupMenuItem(
+                value: 'delete',
+                child: ListTile(
+                  leading: Icon(Icons.delete_outline, color: Colors.red),
+                  title: Text('Delete'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// One day of the week as a panel: its name, how many classes, and the
+  /// classes in time order.
+  Widget _dayPanel(
+    String day,
+    List<Map<String, dynamic>> classes, {
+    required bool showYear,
+  }) {
+    final theme = Theme.of(context);
+    return AppPanel(
+      padding: const EdgeInsets.fromLTRB(
+        AppSpace.lg,
+        AppSpace.md,
+        AppSpace.xs,
+        AppSpace.sm,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(right: AppSpace.md),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    day,
+                    style: theme.textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: AppSpace.sm,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.primary.withValues(alpha: 0.10),
+                    borderRadius: BorderRadius.circular(AppRadius.pill),
+                  ),
+                  child: Text(
+                    '${classes.length} ${classes.length == 1 ? 'class' : 'classes'}',
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: theme.colorScheme.primary,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: AppSpace.xs),
+          for (var i = 0; i < classes.length; i++) ...[
+            if (i > 0) Divider(height: 1, color: theme.dividerColor),
+            _classRow(classes[i], showYear: showYear),
+          ],
+        ],
       ),
     );
   }
 
   Widget _buildSchedulesBody() {
+    final theme = Theme.of(context);
     final years =
         _schedules
             .map((schedule) => schedule['year_level']?.toString() ?? '')
@@ -1381,239 +1984,263 @@ class _AdminClassSchedulesScreenState extends State<AdminClassSchedulesScreen> {
             }
             return left.compareTo(right);
           });
-    final filteredSchedules = _selectedYear == 'all'
-        ? _schedules
-        : _schedules
-              .where(
-                (schedule) =>
-                    schedule['year_level']?.toString() == _selectedYear,
-              )
-              .toList();
+    final selectedYear = years.contains(_selectedYear) ? _selectedYear : 'all';
+    String dayName(dynamic value) {
+      final day = (value as num?)?.toInt() ?? -1;
+      return day >= 0 && day < _weekdays.length ? _weekdays[day] : '';
+    }
 
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-          child: _buildTermControls(),
+    final dayOptions = [
+      for (final day in [1, 2, 3, 4, 5, 6, 0])
+        if (_schedules.any((s) => (s['weekday'] as num?)?.toInt() == day))
+          _weekdays[day],
+    ];
+    final campusOptions = {
+      for (final s in _schedules)
+        if ((s['campus_name']?.toString() ?? '').isNotEmpty)
+          s['campus_name'].toString(),
+    }.toList()..sort();
+    final selectedDay = dayOptions.contains(_selectedDay)
+        ? _selectedDay
+        : _anyDay;
+    final selectedCampus = campusOptions.contains(_selectedCampus)
+        ? _selectedCampus
+        : _anyCampus;
+    final query = _scheduleSearch.trim().toLowerCase();
+
+    // A class is shown when it passes every filter and, if something is
+    // typed, its subject, code, teacher or campus contains it.
+    final filtered = _schedules.where((s) {
+      if (selectedYear != 'all' && s['year_level']?.toString() != selectedYear) {
+        return false;
+      }
+      if (selectedDay != _anyDay && dayName(s['weekday']) != selectedDay) {
+        return false;
+      }
+      if (selectedCampus != _anyCampus &&
+          s['campus_name']?.toString() != selectedCampus) {
+        return false;
+      }
+      if (query.isEmpty) return true;
+      final haystack = [
+        s['subject'],
+        s['teacher_name'],
+        s['teacher_email'],
+        s['campus_name'],
+        dayName(s['weekday']),
+      ].map((v) => (v ?? '').toString().toLowerCase()).join(' ');
+      return haystack.contains(query);
+    }).toList();
+
+    // Monday first, Sunday last, the way a school week is read.
+    final byDay = <int, List<Map<String, dynamic>>>{};
+    for (final item in filtered) {
+      final schedule = Map<String, dynamic>.from(item as Map);
+      final day = (schedule['weekday'] as num?)?.toInt() ?? -1;
+      byDay.putIfAbsent(day, () => []).add(schedule);
+    }
+    for (final list in byDay.values) {
+      list.sort(
+        (a, b) => (a['start_time']?.toString() ?? '').compareTo(
+          b['start_time']?.toString() ?? '',
         ),
-        if (!_selectedTermIsCurrent)
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                'Historical term — uploads and schedule edits are disabled.',
-                style: TextStyle(color: Colors.grey, fontSize: 12),
+      );
+    }
+    final dayOrder = [1, 2, 3, 4, 5, 6, 0, -1]
+        .where(byDay.containsKey)
+        .toList();
+
+    final search = TextField(
+      controller: _scheduleSearchController,
+      onChanged: (value) => setState(() => _scheduleSearch = value),
+      decoration: InputDecoration(
+        hintText: 'Search subject, code or teacher',
+        prefixIcon: const Icon(Icons.search),
+        isDense: true,
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(AppRadius.block),
+        ),
+        suffixIcon: _scheduleSearch.isEmpty
+            ? null
+            : IconButton(
+                tooltip: 'Clear',
+                icon: const Icon(Icons.clear),
+                onPressed: () => setState(() {
+                  _scheduleSearch = '';
+                  _scheduleSearchController.clear();
+                }),
               ),
-            ),
-          ),
-        Card(
-          margin: const EdgeInsets.fromLTRB(12, 8, 12, 6),
-          child: ExpansionTile(
-            tilePadding: const EdgeInsets.symmetric(horizontal: 12),
-            childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-            title: const Text('Upload instructions'),
-            subtitle: const Text('CSV or Excel • weekly schedule'),
+      ),
+    );
+
+    // The same filters as User Management: all in one line on a laptop; on
+    // a phone the year stays out and the rest open from "Filters".
+    final yearOptions = ['All years', for (final year in years) 'Year $year'];
+    final filters = years.isEmpty && dayOptions.isEmpty
+        ? const SizedBox.shrink()
+        : FilterBar(
+            // Folded on a laptop too, the same as on a phone.
+            foldOnWide: true,
             children: [
-              const Align(
-                alignment: Alignment.centerLeft,
-                child: SelectableText(
-                  'course,year_level,section,subject,weekday,start_time,late_after,end_time,teacher_email,campus_code',
-                  style: TextStyle(fontFamily: 'monospace', fontSize: 11),
+              FilterDropdown(
+                value: selectedYear == 'all' ? 'All years' : 'Year $selectedYear',
+                options: yearOptions,
+                icon: Icons.school_outlined,
+                onChanged: (chosen) => setState(
+                  () => _selectedYear = chosen == 'All years'
+                      ? 'all'
+                      : chosen.replaceFirst('Year ', ''),
                 ),
               ),
-              const SizedBox(height: 4),
-              const Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  'Use one row per class and set campus_code on every template row. It must match a campus with a configured boundary.',
-                  style: TextStyle(color: Colors.grey, fontSize: 12),
-                ),
+              FilterDropdown(
+                value: selectedDay,
+                options: [_anyDay, ...dayOptions],
+                icon: Icons.calendar_today_outlined,
+                onChanged: (chosen) => setState(() => _selectedDay = chosen),
               ),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton.icon(
-                  onPressed: _isUploading || !_selectedTermIsCurrent
-                      ? null
-                      : _downloadScheduleTemplate,
-                  icon: const Icon(Icons.download_outlined),
-                  label: const Text('Download CSV template'),
-                ),
-              ),
-              const Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  'Original year-by-year CSV timetables are also supported; only that format asks you to choose a default campus. JPG/PNG is not supported.',
-                  style: TextStyle(color: Colors.grey, fontSize: 12),
-                ),
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                enabled: _selectedTermIsCurrent,
-                controller: _lateAfterMinutesController,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(
-                  labelText: 'Late cutoff (minutes)',
-                  helperText: 'For original timetable CSVs; default 30.',
-                  border: OutlineInputBorder(),
-                  isDense: true,
-                ),
+              FilterDropdown(
+                value: selectedCampus,
+                options: [_anyCampus, ...campusOptions],
+                icon: Icons.location_on_outlined,
+                onChanged: (chosen) => setState(() => _selectedCampus = chosen),
               ),
             ],
-          ),
-        ),
-        if (years.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: DropdownButtonFormField<String>(
-              initialValue: years.contains(_selectedYear)
-                  ? _selectedYear
-                  : 'all',
-              decoration: const InputDecoration(
-                labelText: 'Filter by year level',
-                border: OutlineInputBorder(),
-                contentPadding: EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 8,
-                ),
-              ),
-              items: [
-                const DropdownMenuItem(
-                  value: 'all',
-                  child: Text('All year levels'),
-                ),
-                ...years.map(
-                  (year) =>
-                      DropdownMenuItem(value: year, child: Text('Year $year')),
-                ),
-              ],
-              onChanged: (value) {
-                if (value != null) setState(() => _selectedYear = value);
-              },
+          );
+
+    final actions = Wrap(
+          spacing: AppSpace.xs,
+          children: [
+            TextButton.icon(
+              onPressed: _showUploadHelp,
+              icon: const Icon(Icons.help_outline_rounded, size: 18),
+              label: const Text('How to upload'),
             ),
-          ),
-        if (_schedules.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
-            child: Align(
-              alignment: Alignment.centerRight,
-              child: TextButton.icon(
+            if (_schedules.isNotEmpty)
+              TextButton.icon(
                 onPressed: _isUploading || _isLoading
                     ? null
                     : _archiveAllSchedules,
-                icon: const Icon(Icons.delete_sweep, color: Colors.red),
-                label: const Text(
-                  'Delete all schedules',
-                  style: TextStyle(color: Colors.red),
+                style: TextButton.styleFrom(
+                  foregroundColor: theme.colorScheme.error,
                 ),
+                icon: const Icon(Icons.delete_sweep_outlined, size: 18),
+                label: const Text('Delete all'),
               ),
+          ],
+        );
+    // Laptop: the search and the two actions on one line, the filters
+    // under them. Phone: search, filters, then the actions.
+    final toolbar = LayoutBuilder(
+      builder: (context, constraints) => constraints.maxWidth >= 640
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Expanded(child: search),
+                    const SizedBox(width: AppSpace.md),
+                    actions,
+                  ],
+                ),
+                const SizedBox(height: AppSpace.sm),
+                filters,
+              ],
+            )
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                search,
+                const SizedBox(height: AppSpace.sm),
+                filters,
+                Align(alignment: Alignment.centerRight, child: actions),
+              ],
             ),
-          ),
-        Expanded(
-          child: _isLoading
-              ? const Center(child: CircularProgressIndicator())
-              : _error.isNotEmpty
-              ? Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(_error, textAlign: TextAlign.center),
-                      const SizedBox(height: 12),
-                      OutlinedButton(
-                        onPressed: _loadSchedules,
-                        child: const Text('Retry'),
-                      ),
-                    ],
-                  ),
-                )
-              : _schedules.isEmpty
-              ? RefreshIndicator(
-                  onRefresh: _loadSchedules,
-                  child: ListView(
-                    physics: const AlwaysScrollableScrollPhysics(),
-                    children: const [
-                      SizedBox(height: 100),
-                      Center(child: Text('No class schedules uploaded.')),
-                    ],
-                  ),
-                )
-              : filteredSchedules.isEmpty
-              ? const Center(child: Text('No schedules for this year level.'))
-              : RefreshIndicator(
-                  onRefresh: _loadSchedules,
-                  child: ListView.builder(
-                    physics: const AlwaysScrollableScrollPhysics(),
-                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 88),
-                    itemCount: filteredSchedules.length,
-                    itemBuilder: (context, index) {
-                      final schedule = Map<String, dynamic>.from(
-                        filteredSchedules[index] as Map,
-                      );
-                      final weekday = schedule['weekday'] as num?;
-                      final weekdayName =
-                          weekday != null &&
-                              weekday.toInt() >= 0 &&
-                              weekday.toInt() < _weekdays.length
-                          ? _weekdays[weekday.toInt()]
-                          : 'Unknown day';
-                      final section = schedule['section']?.toString().trim();
-                      return Card(
-                        child: ListTile(
-                          leading: const CircleAvatar(
-                            child: Icon(Icons.menu_book),
-                          ),
-                          title: Text(
-                            schedule['subject']?.toString() ?? 'Class',
-                          ),
-                          subtitle: Text(
-                            '${schedule['course']} ${schedule['year_level']}${section == null || section.isEmpty ? ' (no section)' : '-$section'} • $weekdayName\n'
-                            '${_formatTime(schedule['start_time'])} - ${_formatTime(schedule['end_time'])} '
-                            '(late after ${_formatTime(schedule['late_after'])})\n'
-                            'Campus: ${schedule['campus_name'] ?? 'Not assigned'}\n'
-                            'Teacher: ${schedule['teacher_name'] ?? schedule['teacher_email'] ?? '--'}',
-                          ),
-                          isThreeLine: true,
-                          trailing: PopupMenuButton<String>(
-                            enabled:
-                                !_isUploading &&
-                                !_isLoading &&
-                                _selectedTermIsCurrent,
-                            onSelected: (action) {
-                              if (action == 'edit') {
-                                _editSchedule(schedule);
-                              } else if (action == 'delete') {
-                                _deleteSchedule(schedule);
-                              }
-                            },
-                            itemBuilder: (context) => const [
-                              PopupMenuItem(
-                                value: 'edit',
-                                child: ListTile(
-                                  leading: Icon(Icons.edit),
-                                  title: Text('Edit'),
-                                  contentPadding: EdgeInsets.zero,
-                                ),
-                              ),
-                              PopupMenuItem(
-                                value: 'delete',
-                                child: ListTile(
-                                  leading: Icon(
-                                    Icons.delete,
-                                    color: Colors.red,
-                                  ),
-                                  title: Text('Delete'),
-                                  contentPadding: EdgeInsets.zero,
-                                ),
-                              ),
-                            ],
+    );
+
+    Widget content;
+    if (_isLoading) {
+      content = const Padding(
+        padding: EdgeInsets.only(top: 80),
+        child: Center(child: CircularProgressIndicator()),
+      );
+    } else if (_error.isNotEmpty) {
+      content = EmptyState(
+        icon: Icons.cloud_off_outlined,
+        title: 'Could not load the classes',
+        message: _error,
+        action: OutlinedButton(
+          onPressed: _loadSchedules,
+          child: const Text('Try again'),
+        ),
+      );
+    } else if (_schedules.isEmpty) {
+      content = const EmptyState(
+        icon: Icons.event_note_outlined,
+        title: 'No classes yet',
+        message: 'Tap "Upload timetable" to add this course\'s week.',
+      );
+    } else if (filtered.isEmpty) {
+      content = EmptyState(
+        icon: Icons.search_off_rounded,
+        title: 'No classes match',
+        message: query.isEmpty
+            ? 'Try other filters.'
+            : 'Nothing matches "${_scheduleSearch.trim()}". Check the '
+                  'spelling or clear the filters.',
+      );
+    } else {
+      content = LayoutBuilder(
+        builder: (context, constraints) => _grid(
+          _columnsFor(constraints.maxWidth),
+          [
+            for (final day in dayOrder)
+              _dayPanel(
+                day >= 0 && day < _weekdays.length
+                    ? _weekdays[day]
+                    : 'Unknown day',
+                byDay[day]!,
+                showYear: selectedYear == 'all',
+              ),
+          ],
+        ),
+      );
+    }
+
+    return RefreshIndicator(
+      onRefresh: _loadSchedules,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final pad = constraints.maxWidth < 400 ? AppSpace.md : AppSpace.xl;
+          return ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: EdgeInsets.fromLTRB(pad, AppSpace.md, pad, 96),
+            children: [
+              _page(
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Reveal(order: 0, child: _buildTermControls()),
+                    if (!_selectedTermIsCurrent)
+                      Padding(
+                        padding: const EdgeInsets.only(top: AppSpace.sm),
+                        child: Text(
+                          'An earlier term: uploads and edits are turned off.',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
                           ),
                         ),
-                      );
-                    },
-                  ),
+                      ),
+                    const SizedBox(height: AppSpace.md),
+                    Reveal(order: 1, child: toolbar),
+                    const SizedBox(height: AppSpace.md),
+                    Reveal(order: 2, child: content),
+                  ],
                 ),
-        ),
-      ],
+              ),
+            ],
+          );
+        },
+      ),
     );
   }
 }

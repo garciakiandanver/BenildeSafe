@@ -41,14 +41,12 @@ class _AdminBulkAccountsScreenState extends State<AdminBulkAccountsScreen>
     'Course',
     'Year Level',
     'Student Email',
-    'Parent First Name',
-    'Parent Last Name',
+    // The parent's whole name in one box, as in the registrar's masterlist.
+    'Parent Name',
     'Parent Email',
   ];
   static const _optionalColumns = [
     'Student Middle Name',
-    'Section',
-    'Parent Middle Name',
     'Parent Contact Number',
   ];
 
@@ -564,7 +562,7 @@ class _AdminBulkAccountsScreenState extends State<AdminBulkAccountsScreen>
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Create student and parent accounts from Excel',
+                'Create student and parent accounts from the masterlist',
                 style: theme.textTheme.titleMedium?.copyWith(
                   fontWeight: FontWeight.w800,
                 ),
@@ -1043,7 +1041,7 @@ class _AdminBulkAccountsScreenState extends State<AdminBulkAccountsScreen>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Bulk accounts'),
+        title: const Text('Import accounts'),
         bottom: TabBar(
           controller: _tabs,
           tabs: const [

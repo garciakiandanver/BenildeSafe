@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../services/api_service.dart';
 import '../widgets/date_filter_bar.dart';
 import '../utils/manila_time.dart';
+import '../widgets/app_ui.dart';
 
 class NotificationButton extends StatefulWidget {
   final String token;
@@ -116,11 +117,25 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   bool _isLoading = true;
   String _error = '';
   List<dynamic> _notifications = [];
+  Timer? _poll;
+
+  /// How often the open list asks the server for anything new. A parent who
+  /// keeps this screen open sees a time in arrive within this long, without
+  /// going back to the dashboard. (A push from the server would need a
+  /// connection kept open, which the hosting used here does not allow.)
+  static const _pollEvery = Duration(seconds: 15);
 
   @override
   void initState() {
     super.initState();
     _loadNotifications();
+    _poll = Timer.periodic(_pollEvery, (_) => _loadNotifications(quiet: true));
+  }
+
+  @override
+  void dispose() {
+    _poll?.cancel();
+    super.dispose();
   }
 
   // Shows the whole notification in a large, easy-to-read pop-up (for every
@@ -140,7 +155,10 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     await _markRead(notification);
   }
 
-  Future<void> _loadNotifications() async {
+  /// [quiet] is the timer's check: a failure then leaves the list as it is
+  /// instead of replacing it with an error, since a weak signal for one
+  /// moment is no reason to hide what is already on screen.
+  Future<void> _loadNotifications({bool quiet = false}) async {
     try {
       final result = await ApiService.getNotifications(token: widget.token);
       if (!mounted) return;
@@ -150,7 +168,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         _isLoading = false;
       });
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted || quiet) return;
       setState(() {
         _error = error.toString().replaceFirst('Exception: ', '');
         _isLoading = false;
@@ -246,6 +264,11 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       appBar: AppBar(
         title: const Text('Notifications'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh_rounded),
+            tooltip: 'Refresh',
+            onPressed: _isLoading ? null : _loadNotifications,
+          ),
           if (unreadCount > 0)
             TextButton(
               onPressed: _markAllRead,
@@ -303,12 +326,12 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                             itemBuilder: (context, index) {
                               final notification = visible[index];
                               final isUnread = notification['read_at'] == null;
-                              return Card(
-                                color: isUnread
-                                    ? Theme.of(context)
-                                          .colorScheme
-                                          .primaryContainer
-                                          .withValues(alpha: 0.35)
+                              return AppCard(
+                                index: index,
+                                margin: EdgeInsets.zero,
+                                // Unread ones carry a strip down the edge.
+                                accent: isUnread
+                                    ? Theme.of(context).colorScheme.primary
                                     : null,
                                 child: ListTile(
                                   leading: Icon(

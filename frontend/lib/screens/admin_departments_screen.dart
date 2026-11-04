@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../services/api_service.dart';
+import '../widgets/app_ui.dart';
 
 /// Admin: manage the departments that group the courses (add, edit, delete).
 class AdminDepartmentsScreen extends StatefulWidget {
@@ -166,14 +167,10 @@ class _AdminDepartmentsScreenState extends State<AdminDepartmentsScreen> {
       );
     }
     if (_departments.isEmpty) {
-      return const Center(
-        child: Padding(
-          padding: EdgeInsets.all(24),
-          child: Text(
-            'No departments yet. Add a department, then add its courses.',
-            textAlign: TextAlign.center,
-          ),
-        ),
+      return const EmptyState(
+        icon: Icons.apartment_outlined,
+        title: 'No departments yet',
+        message: 'Add a department, then add its courses.',
       );
     }
 
@@ -186,7 +183,8 @@ class _AdminDepartmentsScreenState extends State<AdminDepartmentsScreen> {
         itemBuilder: (context, index) {
           final department = _departments[index];
           final courseCount = (department['course_count'] as num?)?.toInt() ?? 0;
-          return Card(
+          return AppCard(
+            index: index,
             child: ListTile(
               leading: const CircleAvatar(child: Icon(Icons.apartment)),
               title: Text(department['department_name']?.toString() ?? ''),

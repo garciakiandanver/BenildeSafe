@@ -64,6 +64,16 @@ class ManilaTime {
     return '$hour:$minute ${date.hour >= 12 ? 'PM' : 'AM'}';
   }
 
+  /// "10:59:04 PM" from a Manila wall clock DateTime. The seconds are what
+  /// show a clock on screen to be running rather than stopped at the moment
+  /// the page was opened.
+  static String clockWithSeconds(DateTime date) {
+    final hour = date.hour % 12 == 0 ? 12 : date.hour % 12;
+    final minute = date.minute.toString().padLeft(2, '0');
+    final second = date.second.toString().padLeft(2, '0');
+    return '$hour:$minute:$second ${date.hour >= 12 ? 'PM' : 'AM'}';
+  }
+
   /// "October 18, 2026", or [fallback] when the value cannot be read.
   static String longDate(dynamic value, {String fallback = 'N/A'}) {
     final date = parse(value);

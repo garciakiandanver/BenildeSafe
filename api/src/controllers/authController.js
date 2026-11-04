@@ -66,7 +66,7 @@ const login = async (req, res) => {
 
     if (result.rows.length === 0) {
       return res.status(401).json({
-        message: 'Invalid email or password.'
+        message: 'No BenildeSafe account uses this email address'
       });
     }
 
@@ -74,7 +74,7 @@ const login = async (req, res) => {
 
     if (user.status !== 'active') {
       return res.status(403).json({
-        message: 'Your account is not active.'
+        message: 'Your account is not active. Please contact the School Administrator.'
       });
     }
 
@@ -91,7 +91,7 @@ const login = async (req, res) => {
 
     if (!passwordMatch) {
       return res.status(401).json({
-        message: 'Invalid email or password.'
+        message: 'Incorrect password. Check it and try again, or use "Forgot password?".'
       });
     }
 

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'login_screen.dart';
 import '../services/profile_state.dart';
@@ -11,7 +12,7 @@ import '../services/api_service.dart';
 import '../services/location_service.dart';
 import 'attendance_history_screen.dart';
 import 'notifications_screen.dart';
-import 'teacher_class_schedule_screen.dart';
+import 'teacher_dashboard_screen.dart';
 import '../widgets/app_ui.dart';
 import 'account_settings_screen.dart';
 import '../utils/manila_time.dart';
@@ -47,13 +48,26 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   bool _isInitializing = true;
   bool _isLoading = false;
   bool _isDetectingCampus = false;
-  bool _canCheckIn = false;
 
   String _status = 'Not checked in.';
   String _campus = '';
   String _detectedCampus = '';
   String _campusDetectionMessage = '';
   String _outsideSince = '';
+  bool _confirmingOutside = false;
+
+  // True once a location check has answered, so "not inside any campus" can
+  // be told apart from "not checked yet".
+  bool _hasReading = false;
+
+  // Something the student must know after pressing a button: why a time in
+  // failed, or that the parent could not be notified. Cleared on the next
+  // press or location check.
+  String _notice = '';
+
+  // The campus is looked for once when the screen opens. A pull to refresh
+  // does not repeat it on its own; the button on the campus card does.
+  bool _hasAutoDetected = false;
   String get _displayName =>
       widget.fullName.trim().isNotEmpty ? widget.fullName.trim() : widget.email;
 
@@ -87,14 +101,66 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       return 'Outside Campus';
     }
     if (_isCheckedIn || _detectedCampus.isNotEmpty) return 'Inside Campus';
+    if (_hasReading) return 'Outside Campus';
     return 'Location not checked';
+  }
+
+  /// The one sentence under the badge.
+  ///
+  /// This used to be up to three: the last location check, the last thing the
+  /// server said, and a note about the boundary. They were written at
+  /// different moments, so they could disagree ("Outside Campus" above "You
+  /// can time out here"), and a sentence from before a time out stayed on
+  /// screen after it. Now one sentence is chosen from where things stand.
+  String get _cardMessage {
+    if (_isLoading) {
+      return 'Getting your location. Hold still for a few seconds.';
+    }
+    if (_isDetectingCampus) return 'Checking where you are...';
+    if (_isCheckedIn) {
+      if (_outsideSince.isNotEmpty) {
+        final left = ManilaTime.parse(_outsideSince);
+        final deadline = left == null
+            ? ''
+            : ' before ${ManilaTime.clock(left.add(const Duration(minutes: 30)))}';
+        return 'You left the campus. Go back inside$deadline, or you will be '
+            'timed out automatically.';
+      }
+      return 'You are timed in. Press Time out when you leave the campus.';
+    }
+    if (_detectedCampus.isNotEmpty) {
+      return 'You are inside $_detectedCampus. You can time in now.';
+    }
+    if (_campusDetectionMessage.isNotEmpty) return _campusDetectionMessage;
+    return 'Press "Check my location" to see whether you are inside a campus.';
   }
 
   @override
   void initState() {
     super.initState();
     ProfileState.instance.addListener(_onProfileChanged);
-    _loadActiveAttendance();
+    _releaseKeyboard();
+    // Teachers do not record their own attendance, so none of the location
+    // work below runs for them. They get the teacher dashboard instead.
+    if (!widget.isTeacher) _loadActiveAttendance();
+  }
+
+  // Only let go of the focus when a text field really has it. Unfocusing on
+  // every tap makes the browser open the keyboard again on some phones.
+  void _dismissKeyboardIfOpen() {
+    final focus = FocusManager.instance.primaryFocus;
+    if (focus == null || focus is FocusScopeNode) return;
+    focus.unfocus();
+  }
+
+  // Coming from the login or change password screen, the browser can keep the
+  // old text field focused, so the keyboard pops up on every tap. Let go of it.
+  void _releaseKeyboard() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      FocusManager.instance.primaryFocus?.unfocus();
+      TextInput.finishAutofillContext(shouldSave: false);
+      unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
+    });
   }
 
   Future<void> _loadActiveAttendance() async {
@@ -106,7 +172,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       if (result['active'] == true) {
         setState(() {
           _isCheckedIn = true;
-          _canCheckIn = false;
 
           _campus = result['campus']?['name'] ?? 'Unknown campus';
           _status = 'Active attendance session.';
@@ -117,17 +182,25 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       } else {
         setState(() {
           _isCheckedIn = false;
-          _canCheckIn = true;
           _campus = '';
           _outsideSince = '';
           _status = 'Time in when you are inside a campus boundary.';
         });
+
+        // Look for the campus straight away, so the student sees whether they
+        // are inside before pressing anything. Without this the status on the
+        // home screen stays unknown until the first time in.
+        if (!_hasAutoDetected) {
+          _hasAutoDetected = true;
+          unawaited(_detectCampus());
+        }
       }
     } catch (error) {
       if (!mounted) return;
 
       setState(() {
         _status = error.toString().replaceFirst('Exception: ', '');
+        _notice = _status;
       });
     } finally {
       if (mounted) setState(() => _isInitializing = false);
@@ -182,6 +255,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     setState(() {
       _isDetectingCampus = true;
       _campusDetectionMessage = '';
+      _notice = '';
     });
     try {
       final position = await _getBestPosition();
@@ -200,6 +274,10 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       final detected = result['campus']?['name']?.toString() ?? '';
       setState(() {
         _detectedCampus = detected;
+        _hasReading = true;
+        // A fresh reading replaces what an earlier time in attempt said, so
+        // an old "outside campus" cannot outlive the student walking inside.
+        if (!_isCheckedIn) _status = '';
         _campusDetectionMessage =
             result['message']?.toString() ??
             'Campus detected: ${detected.isEmpty ? 'Unknown campus' : detected}.';
@@ -208,6 +286,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       if (!mounted) return;
       setState(() {
         _detectedCampus = '';
+        _hasReading = false;
         _campusDetectionMessage = error.toString().replaceFirst(
           'Exception: ',
           '',
@@ -280,6 +359,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
     setState(() {
       _isLoading = true;
+      _notice = '';
       _status =
           'Getting your location... hold still for a few seconds for a precise GPS fix.';
     });
@@ -302,15 +382,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       if (!mounted) return;
       setState(() {
         _isCheckedIn = true;
-        _canCheckIn = false;
         _campus = result['campus']?['name'] ?? 'Unknown campus';
         _detectedCampus = _campus;
+        _campusDetectionMessage = '';
         _outsideSince = '';
-        _status = [
-          result['message'] ?? 'Check-in successful.',
-          if (result['notificationWarning'] != null)
-            result['notificationWarning'],
-        ].join(' ');
+        _status = result['message'] ?? 'Check-in successful.';
+        _notice = result['notificationWarning']?.toString() ?? '';
       });
 
       _startLocationMonitoring();
@@ -318,6 +395,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       if (!mounted) return;
       setState(() {
         _status = error.toString().replaceFirst('Exception: ', '');
+        _notice = _status;
       });
     } finally {
       if (mounted) setState(() => _isLoading = false);
@@ -351,9 +429,13 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     });
   }
 
-  Future<void> _sendLocationUpdate(Position position) async {
+  Future<void> _sendLocationUpdate(
+    Position position, {
+    bool confirmed = false,
+  }) async {
     if (!_isCheckedIn || _isSendingUpdate) return;
     _isSendingUpdate = true;
+    var needsConfirmation = false;
 
     try {
       final result = await ApiService.updateLocation(
@@ -362,9 +444,17 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         longitude: position.longitude,
         accuracy: position.accuracy,
         isMocked: position.isMocked,
+        confirmed: confirmed,
       );
 
       if (!mounted) return;
+
+      // The first reading outside the campus is not trusted on its own (GPS can
+      // jump). The server asks for a second reading before it records it.
+      if (result['confirm_required'] == true) {
+        needsConfirmation = true;
+        return;
+      }
 
       setState(() {
         _status = result['message'] ?? result['status'] ?? 'Location updated.';
@@ -376,8 +466,11 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
         if (result['status'] == 'Timed Out') {
           _isCheckedIn = false;
-          _canCheckIn = true;
           _outsideSince = '';
+          _campusDetectionMessage = '';
+          _detectedCampus = '';
+          _notice = 'You were timed out automatically because you stayed '
+              'outside the campus.';
           _locationSubscription?.cancel();
           _heartbeatTimer?.cancel();
         }
@@ -390,6 +483,26 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       });
     } finally {
       _isSendingUpdate = false;
+      if (needsConfirmation && mounted) unawaited(_confirmOutside());
+    }
+  }
+
+  // Takes a fresh, precise reading a few seconds later and reports it as the
+  // confirmation. Only a reading that is still outside starts the 30-minute
+  // timer and alerts the parent.
+  Future<void> _confirmOutside() async {
+    if (_confirmingOutside) return;
+    _confirmingOutside = true;
+    try {
+      await Future.delayed(const Duration(seconds: 15));
+      if (!mounted || !_isCheckedIn) return;
+      final position = await _getBestPosition();
+      if (position == null || !mounted || !_isCheckedIn) return;
+      await _sendLocationUpdate(position, confirmed: true);
+    } catch (error) {
+      debugPrint('Second location check skipped: $error');
+    } finally {
+      _confirmingOutside = false;
     }
   }
 
@@ -404,6 +517,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
     setState(() {
       _isLoading = true;
+      _notice = '';
       _status =
           'Getting your location... hold still for a few seconds for a precise GPS fix.';
     });
@@ -429,23 +543,26 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       if (!mounted) return;
       setState(() {
         _isCheckedIn = false;
-        _canCheckIn = true;
         _outsideSince = '';
-        _status = [
-          result['message'] ?? 'Check-out successful.',
-          'You can time in again while inside a campus boundary.',
-          if (result['notificationWarning'] != null)
-            result['notificationWarning'],
-        ].join(' ');
+        // What was said while timed in no longer applies.
+        _campusDetectionMessage = '';
+        _detectedCampus = '';
+        _hasReading = false;
+        _status = result['message'] ?? 'Check-out successful.';
+        _notice = result['notificationWarning']?.toString() ?? '';
       });
     } catch (error) {
       if (!mounted) return;
       setState(() {
         _status = error.toString().replaceFirst('Exception: ', '');
+        _notice = _status;
       });
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
+    // A fresh reading, so the card says where the student is now rather than
+    // where they were when they timed in.
+    if (mounted && !_isCheckedIn) unawaited(_detectCampus());
   }
 
   Future<void> _signOut() async {
@@ -459,28 +576,24 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   }
 
   void _selectNavigation(int index) {
-    if (index == 0 || index == 1) {
-      setState(() => _selectedNavigationIndex = index);
+    if (index == 0) {
+      setState(() => _selectedNavigationIndex = 0);
       return;
     }
 
-    // Students: 2 = History, 3 = Profile.
-    // Teachers: 2 = Schedule, 3 = History, 4 = Profile.
-    final profileIndex = widget.isTeacher ? 4 : 3;
-    final Widget destination;
-    if (index == profileIndex) {
-      destination = AccountSettingsScreen(
-        email: widget.email,
-        role: widget.isTeacher ? 'Teacher' : 'Student',
-        fullName: widget.fullName,
-        token: widget.token,
-        onSignOut: _signOut,
-      );
-    } else if (widget.isTeacher && index == 2) {
-      destination = TeacherClassScheduleScreen(token: widget.token);
-    } else {
-      destination = AttendanceHistoryScreen(token: widget.token);
-    }
+    // 1 = Attendance (the record of past days), 2 = Profile. Time in and time
+    // out live on the home screen, so there is no separate tab for them.
+    // (Teachers never get here: they are sent to the teacher dashboard in
+    // build().)
+    final destination = index == 2
+        ? AccountSettingsScreen(
+            email: widget.email,
+            role: 'Student',
+            fullName: widget.fullName,
+            token: widget.token,
+            onSignOut: _signOut,
+          )
+        : AttendanceHistoryScreen(token: widget.token, name: _displayName);
     Navigator.push(
       context,
       MaterialPageRoute(builder: (context) => destination),
@@ -489,294 +602,321 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     });
   }
 
-  Widget _buildAttendancePage(BuildContext context) {
+  // ── home ─────────────────────────────────────────────────────────────
+
+  /// The one card that answers the only question this screen exists for: are
+  /// you at the campus, and what can you do about it.
+  ///
+  /// This used to be three cards. The status sat at the top, a clock the phone
+  /// already shows sat in the middle, and the button that actually records
+  /// attendance sat at the bottom, below the week's schedule. A student had to
+  /// scroll past everything to reach the one thing they came to press.
+  Widget _campusCard(bool narrow) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    final date = MaterialLocalizations.of(
-      context,
-    ).formatMediumDate(ManilaTime.now());
-    final canTakeAction = _isCheckedIn || _canCheckIn;
+    final tone = StatusTone.of(context, _locationLabel);
 
-    return LayoutBuilder(
-      builder: (context, constraints) => SingleChildScrollView(
-        physics: const AlwaysScrollableScrollPhysics(),
-        padding: EdgeInsets.all(constraints.maxWidth < 400 ? 16 : 24),
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 760),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+    return Card(
+      child: Padding(
+        padding: EdgeInsets.all(narrow ? AppSpace.lg : AppSpace.xl),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
               children: [
-                Container(
-                  padding: EdgeInsets.all(constraints.maxWidth < 400 ? 22 : 30),
+                // Tinted by the status, and it moves between colours rather
+                // than snapping, so a change of state is something you see.
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 260),
+                  curve: Curves.easeOut,
+                  width: 46,
+                  height: 46,
                   decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(24),
-                    gradient: const LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [Color(0xFF005A23), Color(0xFF003D19)],
-                    ),
+                    color: tone.container,
+                    borderRadius: BorderRadius.circular(AppRadius.block),
                   ),
+                  child: Icon(
+                    _isCheckedIn
+                        ? Icons.how_to_reg_rounded
+                        : Icons.location_on_outlined,
+                    color: tone.content,
+                  ),
+                ),
+                const SizedBox(width: AppSpace.md),
+                Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Row(
-                        children: [
-                          Container(
-                            width: 48,
-                            height: 48,
-                            decoration: BoxDecoration(
-                              color: Colors.white.withValues(alpha: 0.12),
-                              borderRadius: BorderRadius.circular(15),
-                            ),
-                            child: const Icon(
-                              Icons.fact_check_outlined,
-                              color: Color(0xFFE6C64A),
-                              size: 25,
-                            ),
-                          ),
-                          const SizedBox(width: 14),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  'Attendance for today',
-                                  style: theme.textTheme.titleLarge?.copyWith(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.w800,
-                                  ),
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  date,
-                                  style: theme.textTheme.bodyMedium?.copyWith(
-                                    color: Colors.white.withValues(alpha: 0.8),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 24),
                       Text(
-                        _isCheckedIn
-                            ? 'You’re checked in'
-                            : 'Ready when you are',
-                        style: theme.textTheme.headlineSmall?.copyWith(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w800,
+                        _isCheckedIn ? 'Timed in at' : 'Your location',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: scheme.onSurfaceVariant,
                         ),
                       ),
-                      const SizedBox(height: 8),
+                      const SizedBox(height: AppSpace.xs),
                       Text(
-                        _isCheckedIn
-                            ? 'Your attendance session is active.'
-                            : 'Time in while inside a campus boundary.',
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          color: Colors.white.withValues(alpha: 0.85),
-                          height: 1.45,
+                        // Timed in: the campus of the session. Otherwise:
+                        // the campus the last check found, if any.
+                        _isCheckedIn && _campus.isNotEmpty
+                            ? _campus
+                            : !_isCheckedIn && _detectedCampus.isNotEmpty
+                            ? _detectedCampus
+                            : _locationLabel,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w800,
+                          height: 1.2,
                         ),
                       ),
                     ],
                   ),
                 ),
-                const SizedBox(height: 18),
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                if (!narrow) ...[
+                  const SizedBox(width: AppSpace.sm),
+                  StatusBadge(label: _locationLabel),
+                ],
+              ],
+            ),
+            // On a narrow phone the badge would squeeze the campus name, so it
+            // moves under the row instead of fighting it for width.
+            if (narrow) ...[
+              const SizedBox(height: AppSpace.md),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: StatusBadge(label: _locationLabel),
+              ),
+            ],
+
+            // One sentence: where things stand and what to do next.
+            const SizedBox(height: AppSpace.md),
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 200),
+              child: Text(
+                _cardMessage,
+                key: ValueKey(_cardMessage),
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: scheme.onSurface,
+                  height: 1.45,
+                ),
+              ),
+            ),
+            if (_notice.isNotEmpty) ...[
+              const SizedBox(height: AppSpace.sm),
+              Text(
+                _notice,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: StatusTone.forLevel(
+                    context,
+                    StatusLevel.caution,
+                  ).content,
+                  height: 1.4,
+                ),
+              ),
+            ],
+
+            if (_outsideSince.isNotEmpty) ...[
+              const SizedBox(height: AppSpace.md),
+              Builder(
+                builder: (context) {
+                  final outside = StatusTone.of(context, 'Outside Campus');
+                  return Container(
+                    padding: const EdgeInsets.all(AppSpace.md),
+                    decoration: BoxDecoration(
+                      color: outside.container,
+                      borderRadius: BorderRadius.circular(AppRadius.block),
+                    ),
+                    child: Row(
                       children: [
-                        Text(
-                          'CURRENT STATUS',
-                          style: theme.textTheme.labelMedium?.copyWith(
-                            color: scheme.onSurfaceVariant,
-                            fontWeight: FontWeight.w800,
-                            letterSpacing: 1,
-                          ),
+                        Icon(
+                          Icons.location_off_outlined,
+                          size: 18,
+                          color: outside.content,
                         ),
-                        const SizedBox(height: 16),
-                        _attendanceDetailRow(
-                          context,
-                          Icons.location_on_outlined,
-                          'Campus location',
-                          _isCheckedIn
-                              ? _campus
-                              : _detectedCampus.isNotEmpty
-                              ? _detectedCampus
-                              : _locationLabel,
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.end,
-                            children: [
-                              StatusBadge(label: _locationLabel),
-                              const SizedBox(height: 8),
-                              OutlinedButton.icon(
-                                onPressed: _isLoading || _isDetectingCampus
-                                    ? null
-                                    : _detectCampus,
-                                icon: _isDetectingCampus
-                                    ? const SizedBox(
-                                        width: 14,
-                                        height: 14,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                        ),
-                                      )
-                                    : const Icon(
-                                        Icons.my_location_outlined,
-                                        size: 16,
-                                      ),
-                                label: Text(
-                                  _isDetectingCampus
-                                      ? 'Detecting'
-                                      : 'Detect campus',
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        if (_campusDetectionMessage.isNotEmpty) ...[
-                          const SizedBox(height: 10),
-                          Text(
-                            _campusDetectionMessage,
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: scheme.onSurfaceVariant,
+                        const SizedBox(width: AppSpace.sm),
+                        Expanded(
+                          child: Text(
+                            'Outside campus since '
+                            '${ManilaTime.time(_outsideSince, fallback: _outsideSince)}',
+                            style: TextStyle(
+                              color: outside.content,
+                              fontSize: 13,
                             ),
                           ),
-                        ],
-                        const SizedBox(height: 18),
-                        _attendanceDetailRow(
-                          context,
-                          Icons.info_outline_rounded,
-                          'Attendance update',
-                          _status,
-                          null,
                         ),
                       ],
                     ),
+                  );
+                },
+              ),
+            ],
+
+            // Two buttons, side by side, always in the same place. Only the
+            // one that applies can be pressed: Time in until the student has
+            // timed in, then Time out. One button that changed its label in
+            // the same spot and the same green left students unsure which
+            // they were about to press.
+            const SizedBox(height: AppSpace.xl),
+            Row(
+              children: [
+                Expanded(
+                  child: _attendanceButton(
+                    label: 'Time in',
+                    icon: Icons.login_rounded,
+                    color: scheme.primary,
+                    busy: _isLoading && !_isCheckedIn,
+                    onPressed: !_isInitializing && !_isLoading && !_isCheckedIn
+                        ? _checkIn
+                        : null,
                   ),
                 ),
-                const SizedBox(height: 18),
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Text(
-                          'Record attendance',
-                          style: theme.textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          canTakeAction
-                              ? 'Time in and out are recorded only inside a configured campus boundary.'
-                              : 'There is no check-in or check-out action available right now.',
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: scheme.onSurfaceVariant,
-                            height: 1.4,
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                        SizedBox(
-                          height: 54,
-                          child: FilledButton.icon(
-                            onPressed: _isLoading || !canTakeAction
-                                ? null
-                                : _isCheckedIn
-                                ? _checkOut
-                                : _checkIn,
-                            icon: _isLoading
-                                ? const SizedBox(
-                                    width: 18,
-                                    height: 18,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: Colors.white,
-                                    ),
-                                  )
-                                : Icon(
-                                    _isCheckedIn
-                                        ? Icons.logout_rounded
-                                        : Icons.login_rounded,
-                                  ),
-                            label: Text(
-                              _isLoading
-                                  ? 'Checking location...'
-                                  : _isCheckedIn
-                                  ? 'Time Out'
-                                  : _canCheckIn
-                                  ? 'Time In'
-                                  : 'No attendance action available',
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
+                const SizedBox(width: AppSpace.md),
+                Expanded(
+                  child: _attendanceButton(
+                    label: 'Time out',
+                    icon: Icons.logout_rounded,
+                    color: StatusTone.forLevel(context, StatusLevel.stop).content,
+                    busy: _isLoading && _isCheckedIn,
+                    onPressed: !_isInitializing && !_isLoading && _isCheckedIn
+                        ? _checkOut
+                        : null,
                   ),
                 ),
               ],
             ),
-          ),
+
+            const SizedBox(height: AppSpace.sm),
+            // The campus is looked for once when the screen opens; this is how
+            // the student asks for another reading after walking somewhere
+            // else.
+            Center(
+              child: TextButton.icon(
+                onPressed: _isLoading || _isDetectingCampus
+                    ? null
+                    : _detectCampus,
+                icon: _isDetectingCampus
+                    ? const SizedBox(
+                        width: 15,
+                        height: 15,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.my_location_outlined, size: 18),
+                label: Text(
+                  _isDetectingCampus ? 'Checking location' : 'Check my location',
+                ),
+              ),
+            ),
+            Center(
+                child: Text(
+                  'Your location is used to confirm you are at the campus.',
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+          ],
         ),
       ),
     );
   }
 
-  Widget _attendanceDetailRow(
-    BuildContext context,
-    IconData icon,
-    String label,
-    String value,
-    Widget? trailing,
-  ) {
-    final theme = Theme.of(context);
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Icon(icon, color: theme.colorScheme.primary, size: 21),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                label,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: 3),
-              Text(value, style: theme.textTheme.bodyMedium),
-              if (trailing != null && trailing is! StatusBadge) ...[
-                const SizedBox(height: 4),
-                trailing,
-              ],
-            ],
-          ),
+  /// One of the two attendance buttons. Disabled, it fades to grey, so the
+  /// one that can be pressed is the only one in colour.
+  Widget _attendanceButton({
+    required String label,
+    required IconData icon,
+    required Color color,
+    required bool busy,
+    required VoidCallback? onPressed,
+  }) {
+    return SizedBox(
+      height: 54,
+      child: FilledButton.icon(
+        style: FilledButton.styleFrom(
+          backgroundColor: color,
+          foregroundColor: Colors.white,
         ),
-        if (trailing is StatusBadge) trailing,
-      ],
+        onPressed: onPressed,
+        icon: busy
+            ? const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.white,
+                ),
+              )
+            : Icon(icon),
+        label: Text(
+          busy ? 'Locating…' : label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+        ),
+      ),
     );
   }
 
+  /// Who you are, where you are, and today's classes. Three blocks, in the
+  /// order a student needs them.
+  Widget _buildHome(BoxConstraints constraints) {
+    final narrow = constraints.maxWidth < 400;
+    final pad = narrow ? AppSpace.lg : AppSpace.xl;
+    return SingleChildScrollView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      child: Column(
+        children: [
+          // The school's green band, the same as every other role's home.
+          Reveal(
+            order: 0,
+            child: BrandBand(
+              greeting: _firstName.isNotEmpty ? 'Hello, $_firstName' : 'Hello',
+              subtitle: 'Time in when you arrive, time out when you leave.',
+              name: _displayName,
+              photo: ProfileState.instance.photo,
+              maxWidth: 760,
+            ),
+          ),
+          Padding(
+            padding: EdgeInsets.fromLTRB(pad, AppSpace.lg, pad, pad),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 760),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Reveal(order: 1, child: _campusCard(narrow)),
+                    const SizedBox(height: AppSpace.md),
+                    Reveal(
+                      order: 2,
+                      child: DailyScheduleCard(token: widget.token),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
   @override
   Widget build(BuildContext context) {
+    if (widget.isTeacher) {
+      return TeacherDashboardScreen(
+        token: widget.token,
+        email: widget.email,
+        fullName: widget.fullName,
+        firstName: widget.firstName,
+        onSignOut: _signOut,
+      );
+    }
+
     return Listener(
-      onPointerDown: (_) => FocusManager.instance.primaryFocus?.unfocus(),
+      onPointerDown: (_) => _dismissKeyboardIfOpen(),
       child: Scaffold(
-        appBar: AppBar(
-          title: Text(
-            _selectedNavigationIndex == 1
-                ? 'Attendance'
-                : widget.isTeacher
-                ? 'Teacher dashboard'
-                : 'BenildeSafe',
-          ),
+        appBar: brandAppBar(
           actions: [
             NotificationButton(token: widget.token),
             IconButton(
@@ -791,484 +931,29 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             ? const Center(child: CircularProgressIndicator())
             : RefreshIndicator(
                 onRefresh: _refreshAttendance,
-                child: _selectedNavigationIndex == 1
-                    ? _buildAttendancePage(context)
-                    : LayoutBuilder(
-                        builder: (context, constraints) => SingleChildScrollView(
-                          physics: const AlwaysScrollableScrollPhysics(),
-                          padding: EdgeInsets.all(
-                            constraints.maxWidth < 400 ? 16 : 24,
-                          ),
-                          child: Center(
-                            child: ConstrainedBox(
-                              constraints: const BoxConstraints(maxWidth: 760),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: [
-                                  Row(
-                                    children: [
-                                      ProfileAvatar(
-                                        name: _displayName,
-                                        radius: 24,
-                                        photo: ProfileState.instance.photo,
-                                      ),
-                                      const SizedBox(width: 13),
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            Text(
-                                              _firstName.isNotEmpty
-                                                  ? 'Welcome, $_firstName'
-                                                  : 'Welcome',
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                              style: Theme.of(context)
-                                                  .textTheme
-                                                  .titleLarge
-                                                  ?.copyWith(
-                                                    fontWeight: FontWeight.w800,
-                                                  ),
-                                            ),
-                                            const SizedBox(height: 3),
-                                            Text(
-                                              MaterialLocalizations.of(
-                                                context,
-                                              ).formatMediumDate(
-                                                ManilaTime.now(),
-                                              ),
-                                              style: Theme.of(context)
-                                                  .textTheme
-                                                  .bodySmall
-                                                  ?.copyWith(
-                                                    color: Theme.of(context)
-                                                        .colorScheme
-                                                        .onSurfaceVariant,
-                                                  ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 18),
-                                  Card(
-                                    child: Padding(
-                                      padding: const EdgeInsets.all(17),
-                                      child: Row(
-                                        children: [
-                                          Container(
-                                            width: 42,
-                                            height: 42,
-                                            decoration: BoxDecoration(
-                                              color: Theme.of(
-                                                context,
-                                              ).colorScheme.primaryContainer,
-                                              borderRadius:
-                                                  BorderRadius.circular(14),
-                                            ),
-                                            child: Icon(
-                                              Icons.location_on_outlined,
-                                              color: Theme.of(
-                                                context,
-                                              ).colorScheme.primary,
-                                            ),
-                                          ),
-                                          const SizedBox(width: 13),
-                                          Expanded(
-                                            child: Column(
-                                              crossAxisAlignment:
-                                                  CrossAxisAlignment.start,
-                                              children: [
-                                                Text(
-                                                  'Campus location',
-                                                  style: TextStyle(
-                                                    color: Theme.of(context)
-                                                        .colorScheme
-                                                        .onSurfaceVariant,
-                                                    fontSize: 12,
-                                                  ),
-                                                ),
-                                                const SizedBox(height: 3),
-                                                Text(
-                                                  _campus.isEmpty
-                                                      ? _locationLabel
-                                                      : _campus,
-                                                  style: TextStyle(
-                                                    color: Theme.of(
-                                                      context,
-                                                    ).colorScheme.onSurface,
-                                                    fontWeight: FontWeight.w700,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                          ),
-                                          StatusBadge(label: _locationLabel),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(height: 12),
-                                  Row(
-                                    children: [
-                                      Expanded(
-                                        child: _TodayInfoCard(
-                                          icon: Icons.access_time_rounded,
-                                          label: 'Current time',
-                                          value: ManilaTime.clock(
-                                            ManilaTime.now(),
-                                          ),
-                                        ),
-                                      ),
-                                      const SizedBox(width: 10),
-                                      Expanded(
-                                        child: _TodayInfoCard(
-                                          icon: Icons.fact_check_outlined,
-                                          label: 'Attendance',
-                                          value: _isCheckedIn
-                                              ? 'Present'
-                                              : _canCheckIn
-                                              ? 'Ready to time in'
-                                              : 'Not checked in',
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 14),
-                                  DailyScheduleCard(
-                                    token: widget.token,
-                                    isTeacher: widget.isTeacher,
-                                  ),
-                                  const SizedBox(height: 18),
-                                  Card(
-                                    child: Padding(
-                                      padding: EdgeInsets.all(
-                                        constraints.maxWidth < 400 ? 18 : 26,
-                                      ),
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Row(
-                                            children: [
-                                              Container(
-                                                width: 44,
-                                                height: 44,
-                                                decoration: BoxDecoration(
-                                                  color: _isCheckedIn
-                                                      ? const Color(0xFFE6F5EF)
-                                                      : Theme.of(context)
-                                                            .colorScheme
-                                                            .primaryContainer,
-                                                  borderRadius:
-                                                      BorderRadius.circular(14),
-                                                ),
-                                                child: Icon(
-                                                  _isCheckedIn
-                                                      ? Icons
-                                                            .check_circle_outline
-                                                      : Icons
-                                                            .calendar_month_outlined,
-                                                  color: _isCheckedIn
-                                                      ? const Color(0xFF268664)
-                                                      : Theme.of(
-                                                          context,
-                                                        ).colorScheme.primary,
-                                                ),
-                                              ),
-                                              const SizedBox(width: 13),
-                                              Expanded(
-                                                child: Column(
-                                                  crossAxisAlignment:
-                                                      CrossAxisAlignment.start,
-                                                  children: [
-                                                    Text(
-                                                      _isCheckedIn
-                                                          ? 'You’re checked in'
-                                                          : 'Your attendance',
-                                                      style: Theme.of(context)
-                                                          .textTheme
-                                                          .titleMedium
-                                                          ?.copyWith(
-                                                            fontWeight:
-                                                                FontWeight.w700,
-                                                          ),
-                                                    ),
-                                                    const SizedBox(height: 3),
-                                                    Text(
-                                                      _isCheckedIn
-                                                          ? 'Your attendance session is active.'
-                                                          : 'Time in and out at an approved campus boundary.',
-                                                      style: Theme.of(context)
-                                                          .textTheme
-                                                          .bodySmall
-                                                          ?.copyWith(
-                                                            color: Theme.of(context)
-                                                                .colorScheme
-                                                                .onSurfaceVariant,
-                                                          ),
-                                                    ),
-                                                  ],
-                                                ),
-                                              ),
-                                              if (_isCheckedIn)
-                                                Container(
-                                                  padding:
-                                                      const EdgeInsets.symmetric(
-                                                        horizontal: 10,
-                                                        vertical: 6,
-                                                      ),
-                                                  decoration: BoxDecoration(
-                                                    color: const Color(
-                                                      0xFFE6F5EF,
-                                                    ),
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                          20,
-                                                        ),
-                                                  ),
-                                                  child: const Text(
-                                                    'ACTIVE',
-                                                    style: TextStyle(
-                                                      color: Color(0xFF268664),
-                                                      fontSize: 10,
-                                                      fontWeight:
-                                                          FontWeight.w800,
-                                                      letterSpacing: 0.5,
-                                                    ),
-                                                  ),
-                                                ),
-                                            ],
-                                          ),
-                                          const SizedBox(height: 23),
-                                          Text(
-                                            _status,
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .bodyLarge
-                                                ?.copyWith(
-                                                  color: Theme.of(context)
-                                                      .colorScheme
-                                                      .onSurfaceVariant,
-                                                  height: 1.5,
-                                                ),
-                                          ),
-                                          if (_campus.isNotEmpty) ...[
-                                            const SizedBox(height: 10),
-                                            _infoRow(
-                                              context,
-                                              Icons.location_on_outlined,
-                                              _campus,
-                                            ),
-                                          ],
-                                          if (_outsideSince.isNotEmpty) ...[
-                                            const SizedBox(height: 12),
-                                            Container(
-                                              padding: const EdgeInsets.all(12),
-                                              decoration: BoxDecoration(
-                                                color: const Color(0xFFFFF5E8),
-                                                borderRadius:
-                                                    BorderRadius.circular(10),
-                                              ),
-                                              child: Row(
-                                                children: [
-                                                  const Icon(
-                                                    Icons.location_off_outlined,
-                                                    size: 18,
-                                                    color: Color(0xFFB67827),
-                                                  ),
-                                                  const SizedBox(width: 9),
-                                                  Expanded(
-                                                    child: Text(
-                                                      'Outside campus since ${ManilaTime.time(_outsideSince, fallback: _outsideSince)}',
-                                                      style: const TextStyle(
-                                                        color: Color(
-                                                          0xFF80591E,
-                                                        ),
-                                                        fontSize: 12,
-                                                      ),
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                            ),
-                                          ],
-                                          if (_isCheckedIn || _canCheckIn) ...[
-                                            const SizedBox(height: 24),
-                                            SizedBox(
-                                              width: double.infinity,
-                                              height: 52,
-                                              child: ElevatedButton.icon(
-                                                onPressed: _isLoading
-                                                    ? null
-                                                    : _isCheckedIn
-                                                    ? _checkOut
-                                                    : _checkIn,
-                                                icon: _isLoading
-                                                    ? const SizedBox(
-                                                        width: 18,
-                                                        height: 18,
-                                                        child:
-                                                            CircularProgressIndicator(
-                                                              strokeWidth: 2,
-                                                              color:
-                                                                  Colors.white,
-                                                            ),
-                                                      )
-                                                    : Icon(
-                                                        _isCheckedIn
-                                                            ? Icons
-                                                                  .logout_rounded
-                                                            : Icons
-                                                                  .login_rounded,
-                                                      ),
-                                                label: Text(
-                                                  _isLoading
-                                                      ? 'Getting your location…'
-                                                      : _isCheckedIn
-                                                      ? 'Time Out'
-                                                      : 'Time In',
-                                                ),
-                                              ),
-                                            ),
-                                            const SizedBox(height: 10),
-                                            Text(
-                                              'Your location is used to confirm you are at the campus.',
-                                              textAlign: TextAlign.center,
-                                              style: Theme.of(context)
-                                                  .textTheme
-                                                  .bodySmall
-                                                  ?.copyWith(
-                                                    color: Theme.of(context)
-                                                        .colorScheme
-                                                        .onSurfaceVariant,
-                                                  ),
-                                            ),
-                                          ],
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
+                child: LayoutBuilder(
+                  builder: (context, constraints) =>
+                      _buildHome(constraints),
+                ),
               ),
         bottomNavigationBar: NavigationBar(
-          destinations: widget.isTeacher
-              ? const [
-                  NavigationDestination(
-                    icon: Icon(Icons.home_outlined),
-                    selectedIcon: Icon(Icons.home_rounded),
-                    label: 'Home',
-                  ),
-                  NavigationDestination(
-                    icon: Icon(Icons.fact_check_outlined),
-                    label: 'Attendance',
-                  ),
-                  NavigationDestination(
-                    icon: Icon(Icons.calendar_month_outlined),
-                    label: 'Schedule',
-                  ),
-                  NavigationDestination(
-                    icon: Icon(Icons.history_rounded),
-                    label: 'History',
-                  ),
-                  NavigationDestination(
-                    icon: Icon(Icons.person_outline_rounded),
-                    label: 'Profile',
-                  ),
-                ]
-              : const [
-                  NavigationDestination(
-                    icon: Icon(Icons.home_outlined),
-                    selectedIcon: Icon(Icons.home_rounded),
-                    label: 'Home',
-                  ),
-                  NavigationDestination(
-                    icon: Icon(Icons.fact_check_outlined),
-                    label: 'Attendance',
-                  ),
-                  NavigationDestination(
-                    icon: Icon(Icons.history_rounded),
-                    label: 'History',
-                  ),
-                  NavigationDestination(
-                    icon: Icon(Icons.person_outline_rounded),
-                    label: 'Profile',
-                  ),
-                ],
-          selectedIndex: _selectedNavigationIndex,
-          onDestinationSelected: _selectNavigation,
-        ),
-      ),
-    );
-  }
-
-  Widget _infoRow(BuildContext context, IconData icon, String text) {
-    return Row(
-      children: [
-        Icon(
-          icon,
-          size: 17,
-          color: Theme.of(context).colorScheme.onSurfaceVariant,
-        ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Text(
-            text,
-            style: TextStyle(
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-              fontSize: 13,
+          destinations: const [
+            NavigationDestination(
+              icon: Icon(Icons.home_outlined),
+              selectedIcon: Icon(Icons.home_rounded),
+              label: 'Home',
             ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _TodayInfoCard extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final String value;
-
-  const _TodayInfoCard({
-    required this.icon,
-    required this.label,
-    required this.value,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(13),
-        child: Row(
-          children: [
-            Icon(icon, color: scheme.primary, size: 19),
-            const SizedBox(width: 9),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(label, style: Theme.of(context).textTheme.labelSmall),
-                  const SizedBox(height: 3),
-                  Text(
-                    value,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ],
-              ),
+            NavigationDestination(
+              icon: Icon(Icons.fact_check_outlined),
+              label: 'Attendance',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.person_outline_rounded),
+              label: 'Profile',
             ),
           ],
+          selectedIndex: _selectedNavigationIndex,
+          onDestinationSelected: _selectNavigation,
         ),
       ),
     );

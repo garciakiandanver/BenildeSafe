@@ -85,6 +85,31 @@ const MAX_GPS_ACCURACY_METERS =
     ? Number(process.env.MAX_GPS_ACCURACY_METERS)
     : 100;
 
+// How far outside the drawn boundary still counts as being at the campus.
+//
+// A phone indoors cannot see the sky well, so its reading drifts towards the
+// street, often by 10 to 40 metres. Without an allowance a student sitting in a
+// classroom is refused, and the only way out is to draw a campus far larger
+// than it really is. The drawn boundary stays the true outline of the campus
+// and this allowance absorbs the error of the reading instead.
+//
+// The allowance is the tolerance plus the error the phone reports, and the
+// error can never add more than the tolerance itself, so it stays between
+// BOUNDARY_TOLERANCE_METERS and twice that.
+const BOUNDARY_TOLERANCE_METERS =
+  Number(process.env.BOUNDARY_TOLERANCE_METERS) >= 0
+    ? Number(process.env.BOUNDARY_TOLERANCE_METERS)
+    : 25;
+
+const allowanceMeters = ({ accuracy }) =>
+  BOUNDARY_TOLERANCE_METERS +
+  Math.min(accuracy ?? 0, BOUNDARY_TOLERANCE_METERS);
+
+// Is this reading at the campus: inside the line, or outside it by no more
+// than the allowance?
+const countsAsInside = (position, quality) =>
+  position.inside || position.distanceToEdge <= allowanceMeters(quality);
+
 // Set REJECT_MOCK_LOCATION=true to refuse readings flagged as fake GPS.
 const REJECT_MOCK_LOCATION = process.env.REJECT_MOCK_LOCATION === 'true';
 
@@ -109,16 +134,15 @@ const mockLocationResponse = () => ({
 const isWeakSignal = ({ accuracy }) =>
   accuracy !== null && accuracy > MAX_GPS_ACCURACY_METERS;
 
-const weakSignalMessage = ({ accuracy }) =>
-  `Your GPS signal is too weak (about ${Math.round(accuracy)} m off). Move to an open area, wait a few seconds, then try again.`;
-
-// A reading that is outside the line by less than its own error radius.
-const isTooCloseToCall = (position, { accuracy }) =>
-  !position.inside && accuracy !== null && position.distanceToEdge <= accuracy;
+// No margin of error in the wording: a student reading "about 98 m off" has
+// nothing to do with that number, and it reads like a fault in the app. The
+// figure is still sent as accuracy_m and written to the log.
+const weakSignalMessage = () =>
+  'Your phone cannot pin down your location well enough right now. Move to an open area, wait a few seconds, then try again.';
 
 // Which campus is the point in? When it is in none, also say which campus is
 // the closest and how far away (meters), so a refusal can be explained.
-const locateCampus = async (latitude, longitude) => {
+const locateCampus = async (latitude, longitude, quality = { accuracy: null }) => {
   const result = await pool.query(`
     SELECT id, campus_code, campus_name, boundary_coordinates
     FROM campuses
@@ -139,26 +163,38 @@ const locateCampus = async (latitude, longitude) => {
     const distance = distanceToEdgeMeters(feature, longitude, latitude);
     if (!nearest || distance < nearest.distance) nearest = { campus, distance };
   }
+  // Just outside the line, by no more than the allowance: still at that campus.
+  if (nearest && nearest.distance <= allowanceMeters(quality)) {
+    return { campus: nearest.campus, nearest: null };
+  }
   return { campus: null, nearest };
 };
 
-// The sentence added to a refusal: how far outside, and how good the GPS was.
-// It tells apart a campus boundary that is drawn too small from a GPS reading
-// that is simply not accurate enough.
+// Metres below a kilometre, kilometres above it. "4690 m away" is a number to
+// decode; "4.7 km away" is a distance a person can picture.
+const describeDistance = (meters) =>
+  meters >= 1000
+    ? `${(meters / 1000).toFixed(1)} km`
+    : `${Math.round(meters)} m`;
+
+// The sentence added to a refusal. It says how far outside the student is, and
+// warns when the phone is too unsure of itself for that distance to be trusted
+// — which is what tells a campus drawn too small apart from a poor reading.
+//
+// The margin of error itself is deliberately left out of the wording: it is
+// still sent as accuracy_m and written to the log, where it is useful, but a
+// student cannot act on "±98 m" and it only makes the app look broken.
 const describeOutside = (nearest, { accuracy }) => {
   const parts = [];
   if (nearest) {
     parts.push(
-      `The nearest campus (${nearest.campus.campus_name}) is about ${Math.round(nearest.distance)} m away.`
+      `The nearest campus (${nearest.campus.campus_name}) is about ${describeDistance(nearest.distance)} away.`
     );
   }
-  if (accuracy !== null) {
-    parts.push(`Your GPS accuracy is about ±${Math.round(accuracy)} m.`);
-    if (nearest && accuracy >= nearest.distance) {
-      parts.push(
-        'Your GPS error is as large as that distance, so you may really be inside. Try again outdoors or near a window.'
-      );
-    }
+  if (accuracy !== null && nearest && accuracy >= nearest.distance) {
+    parts.push(
+      'Your phone is not sure enough of its location to tell, so you may really be inside. Try again outdoors or near a window.'
+    );
   }
   return parts.join(' ');
 };
@@ -175,13 +211,18 @@ const outsideFields = (nearest, { accuracy }) => ({
     : null
 });
 
+// Only students record their own attendance. Teachers use the system to follow
+// the classes they teach, and admins and parents never time in at all.
+const ATTENDANCE_ROLE = 'student';
+const notAnAttendanceRole = (req) =>
+  (req.user.role ?? '').toLowerCase() !== ATTENDANCE_ROLE;
+const ATTENDANCE_ROLE_MESSAGE =
+  'Only students record attendance in BenildeSafe.';
+
 const detectCampus = async (req, res) => {
   try {
-    const role = req.user.role?.toLowerCase();
-    if (role !== 'student' && role !== 'teacher') {
-      return res.status(403).json({
-        message: 'Campus detection is available to students and teachers only.'
-      });
+    if (notAnAttendanceRole(req)) {
+      return res.status(403).json({ message: ATTENDANCE_ROLE_MESSAGE });
     }
 
     const coordinates = parseCoordinates(
@@ -202,13 +243,14 @@ const detectCampus = async (req, res) => {
     if (isWeakSignal(quality)) {
       return res.status(422).json({
         code: 'LOW_ACCURACY',
-        message: weakSignalMessage(quality)
+        message: weakSignalMessage()
       });
     }
 
     const { campus, nearest } = await locateCampus(
       coordinates.latitude,
-      coordinates.longitude
+      coordinates.longitude,
+      quality
     );
     if (!campus) {
       return res.status(404).json({
@@ -284,10 +326,8 @@ const checkIn = async (req, res) => {
     const { latitude: latitudeValue, longitude: longitudeValue } = coordinates;
 
     const role = req.user.role?.toLowerCase();
-    if (role !== 'student' && role !== 'teacher') {
-      return res.status(409).json({
-        message: 'Attendance is available to students and teachers only.'
-      });
+    if (notAnAttendanceRole(req)) {
+      return res.status(403).json({ message: ATTENDANCE_ROLE_MESSAGE });
     }
 
     const quality = readGpsQuality(req.body);
@@ -298,13 +338,14 @@ const checkIn = async (req, res) => {
     if (isWeakSignal(quality)) {
       return res.status(422).json({
         code: 'LOW_ACCURACY',
-        message: weakSignalMessage(quality)
+        message: weakSignalMessage()
       });
     }
 
     const { campus: matchedCampus, nearest } = await locateCampus(
       latitudeValue,
-      longitudeValue
+      longitudeValue,
+      quality
     );
     if (!matchedCampus) {
       console.log('Time in refused, outside every campus:', JSON.stringify({
@@ -413,100 +454,13 @@ const checkIn = async (req, res) => {
   }
 };
 
-const getCurrentClassSchedule = async (req, res) => {
-  try {
-    const userId = req.user.userId;
-    const role = req.user.role?.toLowerCase();
-    if (role !== 'student' && role !== 'teacher') {
-      return res.status(403).json({
-        message: 'Class schedules are available to students and teachers only.'
-      });
-    }
-
-    const result = await pool.query(
-      `
-      SELECT
-        cs.id,
-        cs.course,
-        cs.year_level,
-        cs.section,
-        cs.subject,
-        cs.weekday,
-        cs.start_time,
-        cs.late_after,
-        cs.end_time,
-        cs.campus_id,
-        c.campus_code,
-        c.campus_name,
-        (
-          local_time.current_time >= cs.start_time
-          AND local_time.current_time < cs.end_time
-        ) AS in_check_in_window,
-        EXISTS (
-          SELECT 1
-          FROM attendance a
-          WHERE a.user_id = $1
-            AND a.class_schedule_id = cs.id
-            AND a.attendance_date =
-              (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Manila')::date
-        ) AS already_attended
-      FROM class_schedules cs
-      JOIN academic_terms at ON at.id = cs.academic_term_id AND at.is_current = TRUE
-      LEFT JOIN campuses c ON c.id = cs.campus_id
-      CROSS JOIN (
-        SELECT
-          (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Manila')::time AS current_time,
-          EXTRACT(DOW FROM (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Manila'))::int AS current_weekday
-      ) local_time
-      LEFT JOIN students s ON s.user_id = $1
-      WHERE cs.weekday = local_time.current_weekday
-        AND NOT cs.is_archived
-        AND (
-          ($2 = 'student'
-            AND UPPER(BTRIM(cs.course)) = UPPER(BTRIM(s.course))
-            AND UPPER(BTRIM(cs.year_level)) = UPPER(BTRIM(s.year_level))
-            AND COALESCE(UPPER(BTRIM(cs.section)), '') =
-              COALESCE(UPPER(BTRIM(s.section)), ''))
-          OR ($2 = 'teacher' AND cs.teacher_user_id = $1)
-        )
-        AND cs.end_time > local_time.current_time
-      ORDER BY
-        CASE
-          WHEN cs.start_time <= local_time.current_time THEN 0
-          ELSE 1
-        END,
-        cs.start_time
-      LIMIT 1
-      `,
-      [userId, role]
-    );
-
-    if (result.rows.length === 0) {
-      return res.json({ schedule: null });
-    }
-
-    const schedule = result.rows[0];
-    return res.json({
-      schedule: {
-        ...schedule,
-        can_check_in:
-        schedule.in_check_in_window &&
-        !schedule.already_attended &&
-        Boolean(schedule.campus_id && schedule.campus_name)
-      }
-    });
-  } catch (error) {
-    console.error('Get current class schedule error:', error);
-    return res.status(500).json({
-      message: 'Could not load the current class schedule.'
-    });
-  }
-};
-
 //chechOut or Time-out
 
 const checkOut = async (req, res) => {
   try {
+    if (notAnAttendanceRole(req)) {
+      return res.status(403).json({ message: ATTENDANCE_ROLE_MESSAGE });
+    }
     const userId = req.user.userId;
     const { latitude, longitude } = req.body;
     const coordinates = parseCoordinates(latitude, longitude);
@@ -567,9 +521,9 @@ const checkOut = async (req, res) => {
     }
 
     // Must still be at the SAME campus. A reading that only just misses the
-    // line, by less than its own error radius, is given the benefit of the doubt.
+    // line, by no more than the allowance, is given the benefit of the doubt.
     const position = locate(polygon, coordinates.longitude, coordinates.latitude);
-    if (!position.inside && !isTooCloseToCall(position, quality)) {
+    if (!countsAsInside(position, quality)) {
       return res.status(403).json({
         message: `You cannot check out here. You checked in at ${attendance.campus_name}. Please check out from the same campus. ${describeOutside(
           { campus: { campus_name: attendance.campus_name }, distance: position.distanceToEdge },
@@ -637,6 +591,9 @@ const checkOut = async (req, res) => {
 //Update Location
 const updateLocation = async (req, res) => {
   try {
+    if (notAnAttendanceRole(req)) {
+      return res.status(403).json({ message: ATTENDANCE_ROLE_MESSAGE });
+    }
     const userId = req.user.userId;
     const { latitude, longitude } = req.body;
     const coordinates = parseCoordinates(latitude, longitude);
@@ -701,10 +658,10 @@ const updateLocation = async (req, res) => {
     const position = weakSignal
       ? null
       : locate(polygon, coordinates.longitude, coordinates.latitude);
+    // The same allowance as time in: a reading just outside the line does not
+    // mean the student left the campus.
     const nearEdge =
-      Boolean(position) &&
-      quality.accuracy !== null &&
-      position.distanceToEdge <= quality.accuracy;
+      Boolean(position) && position.distanceToEdge <= allowanceMeters(quality);
     // Outside the line, but by less than the error of the reading.
     const outsideNearEdge = nearEdge && !position.inside;
     // Inside the line, but by less than the error, while the outside timer is
@@ -786,6 +743,24 @@ const updateLocation = async (req, res) => {
 
     // First time detected outside
     if (attendance.outside_since === null) {
+
+      // A single reading outside can be a GPS jump (common on a browser, or
+      // indoors). A newer app sends `confirmed: false` with an ordinary reading
+      // and is asked to send a second one a few seconds later with
+      // `confirmed: true`; nothing is recorded and nobody is alerted until then.
+      // An older app does not send the field and is handled as before.
+      if (req.body.confirmed === false) {
+        return res.json({
+          attendance_id: attendance.id,
+          campus: attendance.campus_name,
+          inside_campus: true,
+          status: 'Inside Campus',
+          message: 'Checking your location again.',
+          confirm_required: true,
+          ignored: true,
+          outside_since: null
+        });
+      }
 
       const updated = await pool.query(
         `
@@ -971,113 +946,12 @@ const getMyClassSchedule = async (req, res) => {
 // The next classes coming up for the signed-in student or teacher: one that is
 // happening now, or the next ones today / later this week. Read-only.
 const DAY_MS = 24 * 60 * 60 * 1000;
-const NEXT_CLASS_LIMIT = 3;
-
-const getNextClass = async (req, res) => {
-  try {
-    const userId = req.user.userId;
-    const role = req.user.role?.toLowerCase();
-    if (role !== 'student' && role !== 'teacher') {
-      return res.status(403).json({
-        message: 'Class schedules are available to students and teachers only.'
-      });
-    }
-
-    const roleFilter = role === 'teacher'
-      ? `cs.teacher_user_id = $1`
-      : `EXISTS (
-           SELECT 1
-           FROM students s
-           WHERE s.user_id = $1
-             AND UPPER(BTRIM(cs.course)) = UPPER(BTRIM(s.course))
-             AND UPPER(BTRIM(cs.year_level)) = UPPER(BTRIM(s.year_level))
-             AND (
-               COALESCE(BTRIM(cs.section), '') = ''
-               OR UPPER(BTRIM(cs.section)) = UPPER(BTRIM(s.section))
-             )
-         )`;
-
-    const result = await pool.query(
-      `
-      SELECT
-        cs.id,
-        cs.course,
-        cs.year_level,
-        cs.section,
-        cs.subject,
-        cs.weekday,
-        cs.start_time,
-        cs.late_after,
-        cs.end_time,
-        c.campus_name,
-        NULLIF(BTRIM(CONCAT_WS(
-          ' ',
-          NULLIF(BTRIM(t.first_name), ''),
-          NULLIF(BTRIM(t.last_name), '')
-        )), '') AS teacher_name
-      FROM class_schedules cs
-      JOIN academic_terms at
-        ON at.id = cs.academic_term_id AND at.is_current = TRUE
-      LEFT JOIN campuses c ON c.id = cs.campus_id
-      LEFT JOIN teachers t ON t.user_id = cs.teacher_user_id
-      WHERE NOT cs.is_archived
-        AND ${roleFilter}
-      `,
-      [userId]
-    );
-
-    const { date: today, time: nowTime } = manilaNow();
-    const nowMs = Date.parse(`${today}T${nowTime}Z`);
-    const todayMs = Date.parse(`${today}T00:00:00Z`);
-
-    const upcoming = [];
-    for (let offset = 0; offset <= 7; offset += 1) {
-      const day = new Date(todayMs + offset * DAY_MS);
-      const weekday = day.getUTCDay();
-      const date = day.toISOString().slice(0, 10);
-
-      for (const row of result.rows) {
-        if (Number(row.weekday) !== weekday) continue;
-        // Today's classes that are already over are skipped.
-        if (offset === 0 && row.end_time <= nowTime) continue;
-
-        const startMs = Date.parse(`${date}T${row.start_time}Z`);
-        upcoming.push({
-          id: row.id,
-          subject: row.subject,
-          course: row.course,
-          year_level: row.year_level,
-          section: row.section,
-          weekday,
-          date,
-          day_offset: offset,
-          start_time: row.start_time,
-          end_time: row.end_time,
-          campus_name: row.campus_name,
-          teacher_name: role === 'student' ? row.teacher_name : null,
-          minutes_until: Math.round((startMs - nowMs) / 60000),
-          is_now: offset === 0 && row.start_time <= nowTime,
-          _startMs: startMs
-        });
-      }
-    }
-
-    upcoming.sort((a, b) => a._startMs - b._startMs);
-    const classes = upcoming
-      .slice(0, NEXT_CLASS_LIMIT)
-      .map(({ _startMs, ...item }) => item);
-
-    return res.json({ classes });
-  } catch (error) {
-    console.error('Get next class error:', error);
-    return res.status(500).json({
-      message: 'Could not load your upcoming classes.'
-    });
-  }
-};
 
 const getActiveAttendance = async (req, res) => {
   try {
+    if (notAnAttendanceRole(req)) {
+      return res.json({ active: false });
+    }
     const userId = req.user.userId;
 
     const result = await pool.query(
@@ -1182,8 +1056,11 @@ const minutesOfClock = (value) => {
   return Number.isFinite(hour) && Number.isFinite(minute) ? hour * 60 + minute : null;
 };
 
-// The classes that belong to this user: the student's course, year and section,
+// The classes that belong to this user: the student's course and year level,
 // or the classes a teacher teaches.
+//
+// College students here have no section, so a class belongs to a student when
+// the course and the year level match. The section column is left unused.
 const classRoleFilter = (role) =>
   role === 'teacher'
     ? `cs.teacher_user_id = $1`
@@ -1193,10 +1070,6 @@ const classRoleFilter = (role) =>
          WHERE s.user_id = $1
            AND UPPER(BTRIM(cs.course)) = UPPER(BTRIM(s.course))
            AND UPPER(BTRIM(cs.year_level)) = UPPER(BTRIM(s.year_level))
-           AND (
-             COALESCE(BTRIM(cs.section), '') = ''
-             OR UPPER(BTRIM(cs.section)) = UPPER(BTRIM(s.section))
-           )
        )`;
 
 // Map<weekday, { weekday, start_time, end_time, late_after, class_count, campus_name }>
@@ -1395,8 +1268,6 @@ const getAttendanceHistory = async (req, res) => {
 module.exports = {
   detectCampus,
   checkIn,
-  getCurrentClassSchedule,
-  getNextClass,
   getMyClassSchedule,
   checkOut,
   updateLocation,

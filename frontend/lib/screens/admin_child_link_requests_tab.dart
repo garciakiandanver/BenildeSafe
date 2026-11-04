@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../services/api_service.dart';
+import '../utils/manila_time.dart';
+import '../widgets/app_ui.dart';
 
 /// Admin: parent requests to link another child to their account.
 /// Shown as the "Child links" tab of the Registration requests screen.
@@ -129,26 +131,34 @@ class _AdminChildLinkRequestsTabState extends State<AdminChildLinkRequestsTab> {
     }
   }
 
-  String _formatDate(dynamic value) {
-    final date = DateTime.tryParse(value?.toString() ?? '')?.toLocal();
-    if (date == null) return '--';
-    const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-    ];
-    return '${months[date.month - 1]} ${date.day}, ${date.year}';
-  }
+  // Manila time on every device. This used to follow the phone's own time
+  // zone, so a request made late at night could show the wrong day.
+  String _formatDate(dynamic value) =>
+      ManilaTime.shortDate(value, fallback: '--');
 
-  Color _statusColor(String? status) {
+  StatusLevel _statusLevel(String? status) {
     switch (status) {
       case 'pending':
-        return Colors.orange;
+        return StatusLevel.caution;
       case 'approved':
-        return Colors.green;
+        return StatusLevel.good;
       case 'rejected':
-        return Colors.red;
+        return StatusLevel.stop;
       default:
-        return Colors.grey;
+        return StatusLevel.neutral;
+    }
+  }
+
+  String _statusLabel(String? status) {
+    switch (status) {
+      case 'pending':
+        return 'Pending';
+      case 'approved':
+        return 'Approved';
+      case 'rejected':
+        return 'Declined';
+      default:
+        return status ?? '--';
     }
   }
 
@@ -165,8 +175,11 @@ class _AdminChildLinkRequestsTabState extends State<AdminChildLinkRequestsTab> {
     final movedFrom = request['current_parent_name']?.toString();
     final alreadyLinked = request['already_linked'] == true;
 
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
+    return AppCard(
+      margin: const EdgeInsets.only(bottom: AppSpace.md),
+      accent: isPending
+          ? StatusTone.forLevel(context, StatusLevel.caution).content
+          : null,
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -183,23 +196,9 @@ class _AdminChildLinkRequestsTabState extends State<AdminChildLinkRequestsTab> {
                     ),
                   ),
                 ),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 4,
-                  ),
-                  decoration: BoxDecoration(
-                    color: _statusColor(status),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    (status ?? '--').toUpperCase(),
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
+                StatusBadge(
+                  label: _statusLabel(status),
+                  tone: StatusTone.forLevel(context, _statusLevel(status)),
                 ),
               ],
             ),
@@ -341,18 +340,12 @@ class _AdminChildLinkRequestsTabState extends State<AdminChildLinkRequestsTab> {
       );
     }
     if (_requests.isEmpty) {
-      return const Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.inbox, size: 64, color: Colors.grey),
-            SizedBox(height: 16),
-            Text(
-              'No child link requests yet.',
-              style: TextStyle(color: Colors.grey),
-            ),
-          ],
-        ),
+      return const EmptyState(
+        icon: Icons.inbox_outlined,
+        title: 'No child link requests',
+        message:
+            'When a parent asks to link another child, the request will '
+            'appear here for you to approve or decline.',
       );
     }
 

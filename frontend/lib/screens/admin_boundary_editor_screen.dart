@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import '../services/api_service.dart';
+import '../widgets/map_style.dart';
 
 class AdminBoundaryEditorScreen extends StatefulWidget {
   final Map<String, dynamic> campus;
@@ -21,6 +22,7 @@ class AdminBoundaryEditorScreen extends StatefulWidget {
 class _AdminBoundaryEditorScreenState extends State<AdminBoundaryEditorScreen> {
   final List<LatLng> _points = [];
   bool _isSaving = false;
+  CampusMapStyle _mapStyle = CampusMapMemory.style;
 
   @override
   void initState() {
@@ -183,6 +185,7 @@ class _AdminBoundaryEditorScreenState extends State<AdminBoundaryEditorScreen> {
   @override
   Widget build(BuildContext context) {
     final center = _getCenter();
+    final line = campusBoundaryColor(_mapStyle);
 
     return Scaffold(
       appBar: AppBar(
@@ -219,17 +222,14 @@ class _AdminBoundaryEditorScreenState extends State<AdminBoundaryEditorScreen> {
               onTap: _onMapTap,
             ),
             children: [
-              TileLayer(
-                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                userAgentPackageName: 'com.example.geoloc_attendancecapstone',
-              ),
+              campusTileLayer(_mapStyle),
               if (_points.length >= 3)
                 PolygonLayer(
                   polygons: [
                     Polygon(
                       points: _points,
-                      color: const Color(0xFF005A23).withValues(alpha: 0.2),
-                      borderColor: const Color(0xFF005A23),
+                      color: line.withValues(alpha: 0.22),
+                      borderColor: line,
                       borderStrokeWidth: 3,
                     ),
                   ],
@@ -239,7 +239,7 @@ class _AdminBoundaryEditorScreenState extends State<AdminBoundaryEditorScreen> {
                   polylines: [
                     Polyline(
                       points: _points,
-                      color: const Color(0xFF005A23),
+                      color: line,
                       strokeWidth: 2,
                     ),
                   ],
@@ -282,6 +282,13 @@ class _AdminBoundaryEditorScreenState extends State<AdminBoundaryEditorScreen> {
                 }).toList(),
               ),
             ],
+          ),
+          // Below the instruction bar and above the buttons.
+          CampusMapStyleControl(
+            style: _mapStyle,
+            top: 48,
+            bottom: 72,
+            onChanged: (value) => setState(() => _mapStyle = value),
           ),
           Positioned(
             top: 0,

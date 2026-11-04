@@ -8,7 +8,6 @@ const authRoutes = require('./routes/authRoutes');
 const attendanceRoutes = require('./routes/attendanceRoutes');
 const parentRoutes = require('./routes/parentRoutes');
 const adminRoutes = require('./routes/adminRoutes');
-const registrationRoutes = require('./routes/registrationRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 const classScheduleRoutes = require('./routes/classScheduleRoutes');
 const teacherPortalRoutes = require('./routes/teacherPortalRoutes');
@@ -39,7 +38,6 @@ app.use('/api/admin/class-schedules', classScheduleRoutes);
 app.use('/api/teacher', teacherPortalRoutes);
 app.use('/api/child-links', childLinkRoutes);
 app.use('/api/profile', profileRoutes);
-app.use('/api', registrationRoutes);
 
 module.exports = app;
 

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/api_service.dart';
+import '../widgets/app_ui.dart';
 import 'admin_campus_detail_screen.dart';
 import 'admin_add_campus_screen.dart';
 
@@ -60,15 +61,27 @@ class _AdminCampusesScreenState extends State<AdminCampusesScreen> {
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : _error.isNotEmpty
-          ? Center(child: Text(_error))
+          ? EmptyState(
+              icon: Icons.cloud_off_outlined,
+              title: 'Could not load campuses',
+              message: _error,
+            )
           : _campuses.isEmpty
-          ? const Center(child: Text('No campuses found.'))
+          ? const EmptyState(
+              icon: Icons.location_city_outlined,
+              title: 'No campuses yet',
+              message: 'Tap + to add a campus, then draw its boundary.',
+            )
           : ListView.builder(
               padding: const EdgeInsets.all(16),
               itemCount: _campuses.length,
               itemBuilder: (context, index) {
                 final campus = _campuses[index];
-                return GestureDetector(
+                final hasBoundary = campus['boundary_coordinates'] != null;
+                return AppCard(
+                  index: index,
+                  margin: const EdgeInsets.only(bottom: AppSpace.md),
+                  child: InkWell(
                   onTap: () async {
                     final updated = await Navigator.push<bool>(
                       context,
@@ -83,8 +96,6 @@ class _AdminCampusesScreenState extends State<AdminCampusesScreen> {
                       _loadCampuses();
                     }
                   },
-                  child: Card(
-                    margin: const EdgeInsets.only(bottom: 12),
                     child: Padding(
                       padding: const EdgeInsets.all(16),
                       child: Row(
@@ -120,12 +131,18 @@ class _AdminCampusesScreenState extends State<AdminCampusesScreen> {
                                   'Code: ${campus['campus_code'] ?? '--'}',
                                   style: const TextStyle(color: Colors.grey),
                                 ),
-                                const SizedBox(height: 4),
-                                const Text(
-                                  'Tap to view boundary map',
-                                  style: TextStyle(
-                                    color: Color(0xFF005A23),
-                                    fontSize: 12,
+                                const SizedBox(height: AppSpace.sm),
+                                // The same warning the dashboard raises, so
+                                // the campus it means is easy to spot here.
+                                StatusBadge(
+                                  label: hasBoundary
+                                      ? 'Boundary set'
+                                      : 'No boundary yet',
+                                  tone: StatusTone.forLevel(
+                                    context,
+                                    hasBoundary
+                                        ? StatusLevel.good
+                                        : StatusLevel.caution,
                                   ),
                                 ),
                               ],

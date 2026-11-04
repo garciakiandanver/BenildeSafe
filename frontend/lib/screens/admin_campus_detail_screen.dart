@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import '../services/api_service.dart';
+import '../widgets/map_style.dart';
 import 'admin_boundary_editor_screen.dart';
 
 class AdminCampusDetailScreen extends StatefulWidget {
@@ -21,6 +22,7 @@ class AdminCampusDetailScreen extends StatefulWidget {
 
 class _AdminCampusDetailScreenState extends State<AdminCampusDetailScreen> {
   late Map<String, dynamic> _campus;
+  CampusMapStyle _mapStyle = CampusMapMemory.style;
 
   @override
   void initState() {
@@ -60,6 +62,7 @@ class _AdminCampusDetailScreenState extends State<AdminCampusDetailScreen> {
   Widget build(BuildContext context) {
     final points = _parseCoordinates();
     final center = _getCenter(points);
+    final boundary = campusBoundaryColor(_mapStyle);
 
     return Scaffold(
       appBar: AppBar(
@@ -188,40 +191,45 @@ class _AdminCampusDetailScreenState extends State<AdminCampusDetailScreen> {
           Expanded(
             child: points.isEmpty
                 ? const Center(child: Text('No boundary data available.'))
-                : FlutterMap(
-                    options: MapOptions(initialCenter: center, initialZoom: 17),
+                : Stack(
                     children: [
-                      TileLayer(
-                        urlTemplate:
-                            'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                        userAgentPackageName:
-                            'com.example.geoloc_attendancecapstone',
-                      ),
-                      PolygonLayer(
-                        polygons: [
-                          Polygon(
-                            points: points,
-                            color: const Color(
-                              0xFF005A23,
-                            ).withValues(alpha: 0.2),
-                            borderColor: const Color(0xFF005A23),
-                            borderStrokeWidth: 3,
+                      FlutterMap(
+                        options: MapOptions(
+                          initialCenter: center,
+                          initialZoom: 17,
+                        ),
+                        children: [
+                          campusTileLayer(_mapStyle),
+                          PolygonLayer(
+                            polygons: [
+                              Polygon(
+                                points: points,
+                                color: boundary.withValues(alpha: 0.22),
+                                borderColor: boundary,
+                                borderStrokeWidth: 3,
+                              ),
+                            ],
+                          ),
+                          MarkerLayer(
+                            markers: [
+                              Marker(
+                                point: center,
+                                width: 40,
+                                height: 40,
+                                child: Icon(
+                                  Icons.location_pin,
+                                  color: boundary,
+                                  size: 40,
+                                ),
+                              ),
+                            ],
                           ),
                         ],
                       ),
-                      MarkerLayer(
-                        markers: [
-                          Marker(
-                            point: center,
-                            width: 40,
-                            height: 40,
-                            child: const Icon(
-                              Icons.location_pin,
-                              color: Color(0xFF005A23),
-                              size: 40,
-                            ),
-                          ),
-                        ],
+                      CampusMapStyleControl(
+                        style: _mapStyle,
+                        onChanged: (value) =>
+                            setState(() => _mapStyle = value),
                       ),
                     ],
                   ),

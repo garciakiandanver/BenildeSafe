@@ -34,11 +34,21 @@ const COLUMNS = [
   { key: 'student_last_name', label: 'Student Last Name', required: true, aliases: [] },
   { key: 'course', label: 'Course', required: true, aliases: ['coursecode'] },
   { key: 'year_level', label: 'Year Level', required: true, aliases: ['year'] },
-  { key: 'section', label: 'Section', required: false, aliases: [] },
   { key: 'student_email', label: 'Student Email', required: true, aliases: [] },
-  { key: 'parent_first_name', label: 'Parent First Name', required: true, aliases: [] },
+  // One box for the parent's whole name, as the registrar's masterlist keeps
+  // it ("GUARDIAN'S NAME"). The server splits it for storage; see
+  // splitParentName below.
+  {
+    key: 'parent_name',
+    label: 'Parent Name',
+    required: true,
+    aliases: ['guardianname', 'guardiansname', 'parentfullname', 'parentguardianname', 'parentguardian']
+  },
+  // Files made with the old template, with the name in three boxes, are
+  // still accepted. These are joined into Parent Name when it is missing.
+  { key: 'parent_first_name', label: 'Parent First Name', required: false, aliases: [] },
   { key: 'parent_middle_name', label: 'Parent Middle Name', required: false, aliases: [] },
-  { key: 'parent_last_name', label: 'Parent Last Name', required: true, aliases: [] },
+  { key: 'parent_last_name', label: 'Parent Last Name', required: false, aliases: [] },
   { key: 'parent_email', label: 'Parent Email', required: true, aliases: [] },
   {
     key: 'parent_contact_number',
@@ -119,9 +129,15 @@ const readRowsFromFile = async (buffer, fileName) => {
     );
   }
 
-  const missing = COLUMNS.filter((c) => c.required && !(c.key in columnIndex)).map(
-    (c) => c.label
-  );
+  // An old-template file has no Parent Name but has its first and last name.
+  const hasOldParentName =
+    'parent_first_name' in columnIndex && 'parent_last_name' in columnIndex;
+  const missing = COLUMNS.filter(
+    (c) =>
+      c.required &&
+      !(c.key in columnIndex) &&
+      !(c.key === 'parent_name' && hasOldParentName)
+  ).map((c) => c.label);
   if (missing.length > 0) {
     throw new UserError(`These columns are missing: ${missing.join(', ')}.`);
   }
@@ -179,9 +195,47 @@ const normalizePhone = (value) => {
   return digits;
 };
 
+const NAME_SUFFIXES = new Set(['JR', 'SR', 'II', 'III', 'IV', 'V']);
+
+/**
+ * Splits a whole name such as "Maria Santos Cruz" for the first, middle and
+ * last name columns of the parents table, which stay as they are.
+ *
+ * The last word is the last name and the rest is the first name, with no
+ * middle name. Put back together the name reads exactly as it was typed, so
+ * the full name shown anywhere in the app is unchanged. Whether "Santos" was
+ * a second given name or a middle name cannot be known from one box, and it
+ * does not need to be: nothing in the app shows the parts apart, and the
+ * parent can correct them on Edit profile.
+ */
+const splitParentName = (fullName) => {
+  const words = collapse(fullName).split(' ').filter(Boolean);
+  if (words.length < 2) return { first: words.join(' '), last: '' };
+  let lastCount = 1;
+  // "Juan Cruz Jr." keeps "Cruz Jr." together as the last name.
+  if (
+    words.length > 2 &&
+    NAME_SUFFIXES.has(words[words.length - 1].replace(/\./g, '').toUpperCase())
+  ) {
+    lastCount = 2;
+  }
+  return {
+    first: words.slice(0, words.length - lastCount).join(' '),
+    last: words.slice(words.length - lastCount).join(' ')
+  };
+};
+
 const validateRow = (raw) => {
   const errors = [];
   const warnings = [];
+  const parentName = collapse(
+    raw.parent_name ||
+      [raw.parent_first_name, raw.parent_middle_name, raw.parent_last_name]
+        .map(collapse)
+        .filter(Boolean)
+        .join(' ')
+  );
+  const parentParts = splitParentName(parentName);
   const data = {
     row: Number.isInteger(Number(raw.row)) ? Number(raw.row) : null,
     student_number: collapse(raw.student_number).toUpperCase(),
@@ -190,14 +244,26 @@ const validateRow = (raw) => {
     student_last_name: collapse(raw.student_last_name),
     course: collapse(raw.course).toUpperCase(),
     year_level: normalizeYear(raw.year_level),
-    section: collapse(raw.section).toUpperCase(),
     student_email: collapse(raw.student_email).toLowerCase(),
-    parent_first_name: collapse(raw.parent_first_name),
-    parent_middle_name: collapse(raw.parent_middle_name),
-    parent_last_name: collapse(raw.parent_last_name),
+    parent_name: parentName,
+    parent_first_name: parentParts.first,
+    parent_middle_name: '',
+    parent_last_name: parentParts.last,
     parent_email: collapse(raw.parent_email).toLowerCase(),
     parent_contact_number: normalizePhone(raw.parent_contact_number)
   };
+
+  // The masterlist holds only the number part (for example 2025-01-00013).
+  // The student number kept by the system starts with the course, so the
+  // student appears as BSIT-2025-01-00013. A number that already starts with
+  // the course is left alone, so a row is never prefixed twice.
+  if (
+    data.student_number &&
+    data.course &&
+    !data.student_number.startsWith(`${data.course}-`)
+  ) {
+    data.student_number = `${data.course}-${data.student_number}`;
+  }
 
   const required = [
     ['student_number', 'Student number'],
@@ -206,21 +272,22 @@ const validateRow = (raw) => {
     ['course', 'Course'],
     ['year_level', 'Year level'],
     ['student_email', 'Student email'],
-    ['parent_first_name', 'Parent first name'],
-    ['parent_last_name', 'Parent last name'],
+    ['parent_name', 'Parent name'],
     ['parent_email', 'Parent email']
   ];
   for (const [field, label] of required) {
     if (!data[field]) errors.push(`${label} is required.`);
+  }
+  if (data.parent_name && !data.parent_last_name) {
+    errors.push('Parent name needs at least a first and a last name.');
   }
 
   const names = [
     ['student_first_name', 'Student first name'],
     ['student_middle_name', 'Student middle name'],
     ['student_last_name', 'Student last name'],
-    ['parent_first_name', 'Parent first name'],
-    ['parent_middle_name', 'Parent middle name'],
-    ['parent_last_name', 'Parent last name']
+    ['parent_first_name', 'Parent name'],
+    ['parent_last_name', 'Parent name']
   ];
   for (const [field, label] of names) {
     const value = data[field];
@@ -236,7 +303,6 @@ const validateRow = (raw) => {
   if (data.year_level && !/^[1-6]$/.test(data.year_level)) {
     errors.push('Year level must be a number from 1 to 6.');
   }
-  if (data.section.length > 20) errors.push('Section is too long.');
 
   for (const [field, label] of [
     ['student_email', 'Student email'],
@@ -257,7 +323,8 @@ const validateRow = (raw) => {
     warnings.push('The parent contact number does not look like a Philippine mobile number.');
   }
 
-  return { data, errors, warnings };
+  // The parent's name is checked in two parts; one message is enough.
+  return { data, errors: [...new Set(errors)], warnings };
 };
 
 // ---------------------------------------------------------------------------
@@ -547,9 +614,9 @@ const createAccounts = async (data, roleIds) => {
       `
       INSERT INTO students (
         id, user_id, student_number, first_name, middle_name, last_name,
-        course, year_level, section, parent_id
+        course, year_level, parent_id
       )
-      VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9)
+      VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8)
       `,
       [
         studentUserId,
@@ -559,7 +626,6 @@ const createAccounts = async (data, roleIds) => {
         data.student_last_name,
         data.course,
         data.year_level,
-        data.section || null,
         parentId
       ]
     );

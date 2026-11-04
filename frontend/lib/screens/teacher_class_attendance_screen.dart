@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../services/api_service.dart';
+import '../utils/manila_time.dart';
 import '../widgets/app_ui.dart';
 
 /// Teacher portal: attendance of every student in one class, for a day, a week
@@ -65,7 +66,9 @@ class _TeacherClassAttendanceScreenState
   ];
 
   String _period = 'weekly';
-  DateTime _anchor = DateTime.now();
+  // Manila time, never the clock of the phone: a teacher whose device is set
+  // to another timezone must still open the same day as everyone else.
+  DateTime _anchor = ManilaTime.now();
   bool _isLoading = true;
   String _error = '';
   Map<String, dynamic>? _data;
@@ -182,14 +185,17 @@ class _TeacherClassAttendanceScreenState
     }
   }
 
+  // The system only knows whether the student was inside the campus while the
+  // class was running. It cannot tell whether they were in the room, so the
+  // words here say "on campus", not "present".
   String _statusLabel(String status) {
     switch (status) {
       case 'present':
-        return 'Present';
+        return 'On campus';
       case 'late':
-        return 'Late';
+        return 'On campus, late';
       case 'absent':
-        return 'Absent';
+        return 'Not on campus';
       case 'pending':
         return 'In progress';
       default:
@@ -297,9 +303,9 @@ class _TeacherClassAttendanceScreenState
               spacing: 8,
               runSpacing: 6,
               children: [
-                _countChip('Present', totals['present'], Colors.green.shade700),
+                _countChip('On campus', totals['present'], Colors.green.shade700),
                 _countChip('Late', totals['late'], Colors.orange.shade800),
-                _countChip('Absent', totals['absent'], Colors.red.shade700),
+                _countChip('Not on campus', totals['absent'], Colors.red.shade700),
               ],
             ),
             const SizedBox(height: 6),
@@ -308,6 +314,28 @@ class _TeacherClassAttendanceScreenState
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
               ),
+            ),
+            const SizedBox(height: 6),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(
+                  Icons.info_outline,
+                  size: 15,
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    'Campus attendance only. This shows whether the student was '
+                    'inside the campus while the class was running, not whether '
+                    'they were in the room.',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ],
         ],
@@ -348,7 +376,7 @@ class _TeacherClassAttendanceScreenState
       trailing = _statusChip(records.first['status']?.toString() ?? 'upcoming');
     } else {
       trailing = Text(
-        'P ${summary['present'] ?? 0}  •  L ${summary['late'] ?? 0}  •  A ${summary['absent'] ?? 0}',
+        'On campus ${summary['present'] ?? 0}  •  Late ${summary['late'] ?? 0}  •  Not ${summary['absent'] ?? 0}',
         style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12),
       );
     }
@@ -399,7 +427,7 @@ class _TeacherClassAttendanceScreenState
           icon: Icons.people_outline,
           title: 'No students found',
           message:
-              "No students match this class's course, year level and section.",
+              "No students match this class's course and year level.",
         ),
       );
     }

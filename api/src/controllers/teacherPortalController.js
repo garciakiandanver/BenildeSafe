@@ -138,7 +138,8 @@ const getClassAttendance = async (req, res) => {
     }
     const cls = selected.rows[0];
 
-    // 2. Every weekly meeting of that class (same course, year, section, subject).
+    // 2. Every weekly meeting of that class (same course, year, subject).
+    //    Sections are not used: a class belongs to a course and a year level.
     const meetingsResult = await pool.query(
       `
       SELECT cs.id, cs.weekday, cs.start_time, cs.late_after, cs.end_time
@@ -148,9 +149,7 @@ const getClassAttendance = async (req, res) => {
         AND NOT cs.is_archived
         AND UPPER(BTRIM(cs.course)) = UPPER(BTRIM($3))
         AND UPPER(BTRIM(cs.year_level)) = UPPER(BTRIM($4))
-        AND COALESCE(UPPER(BTRIM(cs.section)), '') =
-            COALESCE(UPPER(BTRIM($5)), '')
-        AND UPPER(BTRIM(cs.subject)) = UPPER(BTRIM($6))
+        AND UPPER(BTRIM(cs.subject)) = UPPER(BTRIM($5))
       ORDER BY cs.weekday, cs.start_time
       `,
       [
@@ -158,7 +157,6 @@ const getClassAttendance = async (req, res) => {
         cls.academic_term_id,
         cls.course,
         cls.year_level,
-        cls.section,
         cls.subject
       ]
     );
@@ -184,8 +182,7 @@ const getClassAttendance = async (req, res) => {
       }
     }
 
-    // 4. Students of the class. A blank section on the schedule means the
-    //    class is for every section of that course and year level.
+    // 4. Students of the class: everyone in that course and year level.
     const studentsResult = await pool.query(
       `
       SELECT s.id, s.user_id, s.student_number,
@@ -193,13 +190,9 @@ const getClassAttendance = async (req, res) => {
       FROM students s
       WHERE UPPER(BTRIM(s.course)) = UPPER(BTRIM($1))
         AND UPPER(BTRIM(s.year_level)) = UPPER(BTRIM($2))
-        AND (
-          COALESCE(BTRIM($3), '') = ''
-          OR UPPER(BTRIM(s.section)) = UPPER(BTRIM($3))
-        )
       ORDER BY s.last_name, s.first_name
       `,
-      [cls.course, cls.year_level, cls.section]
+      [cls.course, cls.year_level]
     );
     const students = studentsResult.rows;
 

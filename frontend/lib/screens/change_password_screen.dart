@@ -41,17 +41,34 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
   String _error = '';
 
   @override
+  void initState() {
+    super.initState();
+    // Redraws the strength meter on every keystroke.
+    _newController.addListener(_onPasswordChanged);
+  }
+
+  void _onPasswordChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
   void dispose() {
+    _newController.removeListener(_onPasswordChanged);
     _newController.dispose();
     _confirmController.dispose();
     super.dispose();
   }
 
+  /// The rule the account must pass. The meter below is guidance only; it never
+  /// blocks a password that already meets this.
+  bool _meetsRequirement(String value) =>
+      value.length >= 8 &&
+      RegExp(r'[A-Z]').hasMatch(value) &&
+      RegExp(r'\d').hasMatch(value);
+
   String? _validate() {
     final newPassword = _newController.text;
-    if (newPassword.length < 8 ||
-        !RegExp(r'[A-Z]').hasMatch(newPassword) ||
-        !RegExp(r'\d').hasMatch(newPassword)) {
+    if (!_meetsRequirement(newPassword)) {
       return 'The new password must be at least 8 characters and contain an uppercase letter and a number.';
     }
     if (newPassword != _confirmController.text) {
@@ -61,6 +78,103 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
       return 'Your new password must be different from your temporary password.';
     }
     return null;
+  }
+
+  /// 0 = nothing typed, 1 = Weak, 2 = Fair, 3 = Good, 4 = Strong.
+  ///
+  /// Length counts first, then the mix of characters. A password shorter than
+  /// the required eight characters never climbs above Weak, so the meter and
+  /// the rule never contradict each other.
+  int _strength(String value) {
+    if (value.isEmpty) return 0;
+    if (value.length < 8) return 1;
+
+    var points = 1;
+    if (value.length >= 12) points++;
+    if (RegExp(r'[A-Z]').hasMatch(value) &&
+        RegExp(r'[a-z]').hasMatch(value)) {
+      points++;
+    }
+    if (RegExp(r'\d').hasMatch(value)) points++;
+    if (RegExp(r'[^A-Za-z0-9]').hasMatch(value)) points++;
+
+    // Strong is reserved for a genuinely long password, so a short one full of
+    // symbols cannot reach the top of the meter.
+    final ceiling = value.length >= 12 ? 4 : 3;
+    return points > ceiling ? ceiling : points;
+  }
+
+  static const _strengthColors = [
+    Color(0xFFC62828), // Weak
+    Color(0xFFEF6C00), // Fair
+    Color(0xFF689F38), // Good
+    Color(0xFF2E7D32), // Strong
+  ];
+
+  static const _strengthLabels = ['Weak', 'Fair', 'Good', 'Strong'];
+  static const _okGreen = Color(0xFF2E7D32);
+
+  Widget _strengthMeter(ThemeData theme) {
+    final value = _newController.text;
+    final score = _strength(value);
+    final empty = theme.colorScheme.outlineVariant;
+    final filled = score == 0 ? empty : _strengthColors[score - 1];
+    final meets = _meetsRequirement(value);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: List.generate(4, (index) {
+            return Expanded(
+              child: Padding(
+                padding: EdgeInsets.only(right: index == 3 ? 0 : 6),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 220),
+                  height: 6,
+                  decoration: BoxDecoration(
+                    color: index < score ? filled : empty,
+                    borderRadius: BorderRadius.circular(3),
+                  ),
+                ),
+              ),
+            );
+          }),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(
+              meets
+                  ? Icons.check_circle_rounded
+                  : Icons.radio_button_unchecked_rounded,
+              size: 16,
+              color: meets ? _okGreen : theme.colorScheme.onSurfaceVariant,
+            ),
+            const SizedBox(width: 7),
+            Expanded(
+              child: Text(
+                'At least 8 characters, with a capital letter and a number',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: meets ? _okGreen : theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+            if (score > 0) ...[
+              const SizedBox(width: 10),
+              Text(
+                _strengthLabels[score - 1],
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: filled,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ],
+    );
   }
 
   Future<void> _submit() async {
@@ -168,9 +282,6 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
                       enabled: !_isSaving,
                       decoration: InputDecoration(
                         labelText: 'New password',
-                        helperText:
-                            'At least 8 characters, with a capital letter and a number',
-                        helperMaxLines: 2,
                         suffixIcon: IconButton(
                           icon: Icon(
                             _hidePassword
@@ -182,7 +293,9 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
                         ),
                       ),
                     ),
-                    const SizedBox(height: 14),
+                    const SizedBox(height: 12),
+                    _strengthMeter(theme),
+                    const SizedBox(height: 16),
                     TextField(
                       controller: _confirmController,
                       obscureText: _hidePassword,
