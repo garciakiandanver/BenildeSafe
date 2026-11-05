@@ -11,6 +11,7 @@ const {
   unlinkParentChild,
   updateManagedUser,
   setManagedUserStatus,
+  resetStudentDevice,
   getCampuses,
   updateCampusBoundary,
   addCampus,
@@ -21,6 +22,10 @@ const {
   getReportUsers,
   getUserAttendanceReport,
 } = require('../controllers/adminController');
+const {
+  getPhotosForDate,
+  getPhoto
+} = require('../controllers/photoVerificationController');
 
 // Self-registration was removed. Accounts are created by the school: students
 // and parents from the registrar's master list through the bulk importer,
@@ -50,6 +55,9 @@ router.delete(
 );
 router.put('/users/:userId', authenticateToken, requireAdmin, updateManagedUser);
 router.patch('/users/:userId/status', authenticateToken, requireAdmin, setManagedUserStatus);
+router.delete('/users/:userId/device', authenticateToken, requireAdmin, resetStudentDevice);
+router.get('/photos', authenticateToken, requireAdmin, getPhotosForDate);
+router.get('/photos/:userId/:date', authenticateToken, requireAdmin, getPhoto);
 router.get('/campuses', authenticateToken, getCampuses);
 router.post('/campuses', authenticateToken, requireAdmin, addCampus);
 router.put('/campuses/:id/boundary', authenticateToken, requireAdmin, updateCampusBoundary);

@@ -6,6 +6,11 @@ const {
   assertEmailConfigured,
   sendPasswordResetCode
 } = require('../services/emailService');
+const {
+  MESSAGES: DEVICE_MESSAGES,
+  validDeviceId,
+  claimDevice
+} = require('../services/deviceBinding');
 
 const login = async (req, res) => {
   try {
@@ -95,11 +100,32 @@ const login = async (req, res) => {
       });
     }
 
+    // Students: one phone per account and one login at a time.
+    let sid;
+    if (String(user.role ?? '').toLowerCase() === 'student') {
+      const deviceId = validDeviceId(req.body.device_id);
+      if (!deviceId) {
+        return res.status(400).json({
+          code: 'DEVICE_REQUIRED',
+          message: DEVICE_MESSAGES.DEVICE_REQUIRED
+        });
+      }
+      const claim = await claimDevice(pool, user.id, deviceId);
+      if (claim.code) {
+        return res.status(403).json({
+          code: claim.code,
+          message: claim.message
+        });
+      }
+      sid = claim.sid;
+    }
+
     const token = jwt.sign(
       {
         userId: user.id,
         email: user.email,
-        role: user.role
+        role: user.role,
+        ...(sid ? { sid } : {})
       },
       process.env.JWT_SECRET,
       {

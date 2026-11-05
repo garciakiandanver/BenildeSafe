@@ -23,10 +23,7 @@ const buildParentText = (type, childName, campusName, status) => {
     case 'attendance_check_in':
       return {
         title: `${childName} checked in`,
-        message:
-          status === 'late'
-            ? `${childName} checked in late at ${place}.`
-            : `${childName} checked in at ${place}.`
+        message: `${childName} checked in at ${place}.`
       };
     case 'attendance_check_out':
       return {
@@ -36,22 +33,22 @@ const buildParentText = (type, childName, campusName, status) => {
     case 'attendance_left_boundary':
       return {
         title: `${childName} left the campus`,
-        message: `${childName} left the boundary of ${place}. They will be timed out automatically in 30 minutes unless they return.`
+        message: `${childName} left the boundary of ${place}.`
       };
     case 'attendance_returned':
       return {
         title: `${childName} is back on campus`,
-        message: `${childName} is back inside ${place}. The automatic time-out timer has been cancelled.`
+        message: `${childName} is back inside ${place}.`
       };
     case 'attendance_timeout_warning':
       return {
         title: `${childName} will be timed out soon`,
-        message: `${childName} has been outside ${place} for almost 30 minutes and will be timed out automatically in a few minutes unless they return.`
+        message: `${childName} is about to be timed out of ${place}.`
       };
     case 'attendance_timeout':
       return {
-        title: `${childName} was timed out`,
-        message: `${childName} was automatically timed out from ${place} after being outside campus for 30 minutes.`
+        title: `${childName} left the campus`,
+        message: `${childName} left ${place} and was timed out automatically.`
       };
     default:
       return null;

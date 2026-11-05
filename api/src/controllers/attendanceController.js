@@ -7,10 +7,6 @@ const {
 } = require('../services/campusBoundary');
 const { createAttendanceNotifications } = require('../services/notificationService');
 
-// A student who stays outside the campus is warned (together with the parent)
-// once they have been outside this many minutes. The automatic time-out is at 30.
-const TIMEOUT_WARNING_AFTER_MINUTES = 25;
-
 // ---------------------------------------------------------------------------
 // Time zone
 //
@@ -159,15 +155,17 @@ const locateCampus = async (latitude, longitude, quality = { accuracy: null }) =
       );
       continue;
     }
-    if (isInside(feature, longitude, latitude)) return { campus, nearest: null };
+    if (isInside(feature, longitude, latitude)) {
+      return { campus, nearest: null, strictInside: true };
+    }
     const distance = distanceToEdgeMeters(feature, longitude, latitude);
     if (!nearest || distance < nearest.distance) nearest = { campus, distance };
   }
   // Just outside the line, by no more than the allowance: still at that campus.
   if (nearest && nearest.distance <= allowanceMeters(quality)) {
-    return { campus: nearest.campus, nearest: null };
+    return { campus: nearest.campus, nearest: null, strictInside: false };
   }
-  return { campus: null, nearest };
+  return { campus: null, nearest, strictInside: false };
 };
 
 // Metres below a kilometre, kilometres above it. "4690 m away" is a number to
@@ -325,7 +323,6 @@ const checkIn = async (req, res) => {
     }
     const { latitude: latitudeValue, longitude: longitudeValue } = coordinates;
 
-    const role = req.user.role?.toLowerCase();
     if (notAnAttendanceRole(req)) {
       return res.status(403).json({ message: ATTENDANCE_ROLE_MESSAGE });
     }
@@ -342,12 +339,28 @@ const checkIn = async (req, res) => {
       });
     }
 
-    const { campus: matchedCampus, nearest } = await locateCampus(
+    // Automatic time in (sent by the app by itself, not by a button). It must
+    // answer quietly: a student who is not at the campus is the normal case, not
+    // an error. It also needs a reading that is really inside the drawn line, not
+    // only inside the allowance, so a student standing just outside the gate is
+    // not timed in and then timed straight out again.
+    const isAuto = req.body.auto === true || req.body.auto === 'true';
+    const skipAuto = (reason, message) =>
+      res.json({ auto_skipped: true, reason, message });
+
+    if (isAuto && isWeakSignal(quality)) {
+      return skipAuto('weak', weakSignalMessage());
+    }
+
+    const { campus: matchedCampus, nearest, strictInside } = await locateCampus(
       latitudeValue,
       longitudeValue,
       quality
     );
     if (!matchedCampus) {
+      if (isAuto) {
+        return skipAuto('outside', 'You are outside the campus.');
+      }
       console.log('Time in refused, outside every campus:', JSON.stringify({
         userId,
         latitude: latitudeValue,
@@ -364,6 +377,12 @@ const checkIn = async (req, res) => {
         ...outsideFields(nearest, quality)
       });
     }
+    if (isAuto && !strictInside) {
+      return skipAuto(
+        'edge',
+        'You are right at the campus boundary. Move a little further inside.'
+      );
+    }
 
     const openSession = await pool.query(
       `
@@ -379,16 +398,17 @@ const checkIn = async (req, res) => {
     );
 
     if (openSession.rows.length > 0) {
+      if (isAuto) {
+        return skipAuto('open', 'You are already timed in.');
+      }
       return res.status(409).json({
         message: 'Check out of your current attendance session before checking in again.'
       });
     }
 
-    // Attendance is per day. The first time in of a student's school day is
-    // late when it is after the late time of the first class; every other time
-    // in (and every teacher time in) is simply present.
-    const lateCheck = await lateStatusFor(userId, role);
-    const status = lateCheck.late ? 'late' : 'present';
+    // There is no schedule and no late: every time in is simply present. The
+    // day's record is the list of times in and out (the daily time record).
+    const status = 'present';
     let notificationWarning;
     const attendanceResult = await pool.query(
       `
@@ -425,8 +445,8 @@ const checkIn = async (req, res) => {
       await createAttendanceNotifications({
         userId,
         title: 'Attendance check-in recorded',
-        message: lateCheck.late
-          ? `Your attendance was recorded at ${matchedCampus.campus_name}. You arrived after ${clockLabel(lateCheck.lateAfter)}, so today is marked late.`
+        message: isAuto
+          ? `You were timed in automatically at ${matchedCampus.campus_name}.`
           : `Your attendance was recorded at ${matchedCampus.campus_name}.`,
         type: 'attendance_check_in'
       });
@@ -436,14 +456,14 @@ const checkIn = async (req, res) => {
     }
 
     return res.status(201).json({
-      message: 'Check-in successful.',
+      auto: isAuto,
+      message: isAuto ? 'Timed in automatically.' : 'Check-in successful.',
       ...(notificationWarning ? { notificationWarning } : {}),
       campus: {
         id: matchedCampus.id,
         code: matchedCampus.campus_code,
         name: matchedCampus.campus_name
       },
-      schedule: null,
       attendance: publicAttendance(attendanceResult.rows[0])
     });
   } catch (error) {
@@ -574,7 +594,6 @@ const checkOut = async (req, res) => {
         code: attendance.campus_code,
         name: attendance.campus_name
       },
-      schedule: null,
       attendance: publicAttendance(updated.rows[0])
     });
 
@@ -671,60 +690,33 @@ const updateLocation = async (req, res) => {
     const uncertain = weakSignal || outsideNearEdge || insideNearEdgeWhileTimed;
 
     // A reading that cannot tell which side of the line the student is on
-    // changes nothing: it neither starts nor cancels the outside timer. The one
-    // exception: once the 30 minutes have run out, a reading just outside the
-    // line still counts towards the automatic time-out.
-    const timerExpired =
-      attendance.outside_since !== null &&
-      (Date.now() - new Date(attendance.outside_since).getTime()) / (1000 * 60) >= 30;
-
-    if (uncertain && !(outsideNearEdge && timerExpired)) {
-      const stillOutside = attendance.outside_since !== null;
+    // changes nothing: it neither times the student out nor cancels anything.
+    if (uncertain) {
       return res.json({
         attendance_id: attendance.id,
         campus: attendance.campus_name,
-        inside_campus: !stillOutside,
-        status: stillOutside ? 'Outside Campus' : 'Inside Campus',
+        inside_campus: true,
+        status: 'Inside Campus',
         message: weakSignal
           ? `Waiting for a better GPS signal (about ${Math.round(quality.accuracy)} m off).`
           : 'You are right at the campus boundary. Move a little further inside for a clearer reading.',
         ignored: true,
-        outside_since: attendance.outside_since
+        outside_since: null
       });
     }
 
-    const isInside = !uncertain && position.inside;
-
-    // STUDENT IS INSIDE THEIR CAMPUS
-    if (isInside) {
-
-      // If they previously went outside,
-      // clear the outside timer.
-      let notificationWarning;
+    // STUDENT IS INSIDE THEIR CAMPUS: nothing to record. A session that an older
+    // version left with an outside timer running is cleared quietly.
+    if (position.inside) {
       if (attendance.outside_since !== null) {
         await pool.query(
           `
           UPDATE attendance
-          SET
-            outside_since = NULL,
-            updated_at = CURRENT_TIMESTAMP
+          SET outside_since = NULL, updated_at = CURRENT_TIMESTAMP
           WHERE id = $1
           `,
           [attendance.id]
         );
-
-        // Tell the student, and the parent, that they are back on campus.
-        try {
-          await createAttendanceNotifications({
-            userId,
-            title: 'You are back on campus',
-            message: `You are back inside ${attendance.campus_name}. The automatic time-out timer has been cancelled.`,
-            type: 'attendance_returned'
-          });
-        } catch (error) {
-          console.error('Return-to-campus notification error:', error);
-          notificationWarning = 'Notifications could not be created.';
-        }
       }
 
       return res.json({
@@ -732,7 +724,6 @@ const updateLocation = async (req, res) => {
         campus: attendance.campus_name,
         inside_campus: true,
         status: 'Inside Campus',
-        ...(notificationWarning ? { notificationWarning } : {}),
         outside_since: null
       });
     }
@@ -741,112 +732,31 @@ const updateLocation = async (req, res) => {
     // STUDENT IS OUTSIDE THEIR CAMPUS
     // -----------------------------------------
 
-    // First time detected outside
-    if (attendance.outside_since === null) {
-
-      // A single reading outside can be a GPS jump (common on a browser, or
-      // indoors). A newer app sends `confirmed: false` with an ordinary reading
-      // and is asked to send a second one a few seconds later with
-      // `confirmed: true`; nothing is recorded and nobody is alerted until then.
-      // An older app does not send the field and is handled as before.
-      if (req.body.confirmed === false) {
-        return res.json({
-          attendance_id: attendance.id,
-          campus: attendance.campus_name,
-          inside_campus: true,
-          status: 'Inside Campus',
-          message: 'Checking your location again.',
-          confirm_required: true,
-          ignored: true,
-          outside_since: null
-        });
-      }
-
-      const updated = await pool.query(
-        `
-        UPDATE attendance
-        SET
-          outside_since = CURRENT_TIMESTAMP,
-          updated_at = CURRENT_TIMESTAMP
-        WHERE id = $1
-        RETURNING outside_since
-        `,
-        [attendance.id]
-      );
-
-      // Tell the student, and the parent, that the boundary was crossed.
-      let notificationWarning;
-      try {
-        await createAttendanceNotifications({
-          userId,
-          title: 'You left the campus boundary',
-          message: `You are outside ${attendance.campus_name}. You will be timed out automatically in 30 minutes unless you return.`,
-          type: 'attendance_left_boundary'
-        });
-      } catch (error) {
-        console.error('Left-boundary notification error:', error);
-        notificationWarning = 'Notifications could not be created.';
-      }
-
+    // A single reading outside can be a GPS jump (common on a browser, or
+    // indoors). A newer app sends `confirmed: false` with an ordinary reading
+    // and is asked to send a second one a few seconds later with
+    // `confirmed: true`; nothing is recorded and nobody is alerted until then.
+    // An older app does not send the field and is handled as before.
+    if (req.body.confirmed === false) {
       return res.json({
         attendance_id: attendance.id,
         campus: attendance.campus_name,
-        inside_campus: false,
-        status: 'Outside Campus',
-        message: 'You are outside your campus. The 30-minute timer has started.',
-        ...(notificationWarning ? { notificationWarning } : {}),
-        outside_since: updated.rows[0].outside_since
+        inside_campus: true,
+        status: 'Inside Campus',
+        message: 'Checking your location again.',
+        confirm_required: true,
+        ignored: true,
+        outside_since: null
       });
     }
 
     // -----------------------------------------
-    // CHECK IF 30 MINUTES HAVE PASSED
+    // LEFT THE CAMPUS -> AUTOMATIC TIME-OUT, AT ONCE
     // -----------------------------------------
-
-    const outsideSince = new Date(attendance.outside_since);
-    const now = new Date();
-
-    const minutesOutside =
-      (now - outsideSince) / (1000 * 60);
-
-    // Still within 30-minute break
-    if (minutesOutside < 30) {
-
-      const remainingMinutes =
-        Math.ceil(30 - minutesOutside);
-
-      // Shortly before the time-out, warn the student and the parent.
-      let notificationWarning;
-      if (minutesOutside >= TIMEOUT_WARNING_AFTER_MINUTES) {
-        try {
-          await createAttendanceNotifications({
-            userId,
-            title: 'Automatic time-out soon',
-            message: `You have been outside ${attendance.campus_name} for ${Math.floor(minutesOutside)} minutes. You will be timed out automatically in about ${remainingMinutes} minute(s) unless you return.`,
-            type: 'attendance_timeout_warning'
-          });
-        } catch (error) {
-          console.error('Time-out warning notification error:', error);
-          notificationWarning = 'Notifications could not be created.';
-        }
-      }
-
-      return res.json({
-        attendance_id: attendance.id,
-        campus: attendance.campus_name,
-        inside_campus: false,
-        status: 'Outside Campus',
-        message: `You are outside campus. ${remainingMinutes} minute(s) remaining before automatic time-out.`,
-        ...(notificationWarning ? { notificationWarning } : {}),
-        outside_since: attendance.outside_since,
-        minutes_outside: Math.floor(minutesOutside)
-      });
-    }
-
-    // -----------------------------------------
-    // 30 MINUTES PASSED → AUTOMATIC TIME-OUT
-    // -----------------------------------------
-
+    // The student is timed out the moment a confirmed reading is outside the
+    // campus, and the linked parent is told. The time out is the time of this
+    // reading. When the student comes back inside, the app times them in again
+    // as a new record, so one day can hold several times in and out.
     const updated = await pool.query(
       `
       UPDATE attendance
@@ -871,8 +781,8 @@ const updateLocation = async (req, res) => {
     try {
       await createAttendanceNotifications({
         userId,
-        title: 'Automatic attendance time-out',
-        message: `An automatic time-out was recorded after you were outside ${attendance.campus_name} for 30 minutes.`,
+        title: 'You left the campus',
+        message: `You left ${attendance.campus_name}, so a time out was recorded automatically.`,
         type: 'attendance_timeout'
       });
     } catch (error) {
@@ -885,7 +795,7 @@ const updateLocation = async (req, res) => {
       campus: attendance.campus_name,
       inside_campus: false,
       status: 'Timed Out',
-      message: 'You have been automatically timed out after being outside campus for 30 minutes.',
+      message: 'You left the campus, so you were timed out automatically.',
       ...(notificationWarning ? { notificationWarning } : {}),
       attendance: publicAttendance(updated.rows[0])
     });
@@ -899,53 +809,6 @@ const updateLocation = async (req, res) => {
     });
   }
 };
-
-// Get the authenticated teacher's active-term class schedule.
-const getMyClassSchedule = async (req, res) => {
-  try {
-    if (req.user.role?.toLowerCase() !== 'teacher') {
-      return res.status(403).json({
-        message: 'This schedule is available to teachers only.'
-      });
-    }
-
-    const result = await pool.query(
-      `
-      SELECT
-        cs.id,
-        cs.course,
-        cs.year_level,
-        cs.section,
-        cs.subject,
-        cs.weekday,
-        cs.start_time,
-        cs.late_after,
-        cs.end_time,
-        at.school_year,
-        at.semester
-      FROM class_schedules cs
-      JOIN academic_terms at
-        ON at.id = cs.academic_term_id
-        AND at.is_current = TRUE
-      WHERE cs.teacher_user_id = $1
-        AND NOT cs.is_archived
-      ORDER BY cs.weekday, cs.start_time, cs.course, cs.year_level, cs.section
-      `,
-      [req.user.userId]
-    );
-
-    return res.json({ schedules: result.rows });
-  } catch (error) {
-    console.error('Get teacher class schedule error:', error);
-    return res.status(500).json({
-      message: 'Could not load your class schedule.'
-    });
-  }
-};
-
-// The next classes coming up for the signed-in student or teacher: one that is
-// happening now, or the next ones today / later this week. Read-only.
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 const getActiveAttendance = async (req, res) => {
   try {
@@ -999,7 +862,6 @@ const getActiveAttendance = async (req, res) => {
       },
       time_in: attendance.time_in_text,
       outside_since: attendance.outside_since,
-      schedule: null,
       latitude_in: attendance.latitude_in,
       longitude_in: attendance.longitude_in
     });
@@ -1013,216 +875,8 @@ const getActiveAttendance = async (req, res) => {
   }
 };
 
-// ---------------------------------------------------------------------------
-// Daily schedule
-//
-// Attendance is per day, not per class. The school day of a student is one
-// window: from the start of the first class to the end of the last class on
-// that weekday. It is worked out from the class schedules the admin already
-// uploads (read only, nothing new is stored).
-// ---------------------------------------------------------------------------
-const manilaNow = () => {
-  const now = new Date();
-  return {
-    date: new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'Asia/Manila',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit'
-    }).format(now),
-    time: new Intl.DateTimeFormat('en-GB', {
-      timeZone: 'Asia/Manila',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hourCycle: 'h23'
-    }).format(now)
-  };
-};
-
-// 0 = Sunday ... 6 = Saturday, the same numbers as class_schedules.weekday.
-const weekdayOfDate = (dateText) => new Date(`${dateText}T00:00:00Z`).getUTCDay();
-
-// "08:15:00" -> "8:15 AM"
-const clockLabel = (value) => {
-  const [hour, minute] = String(value ?? '').split(':').map(Number);
-  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return '';
-  return `${hour % 12 === 0 ? 12 : hour % 12}:${String(minute).padStart(2, '0')} ${hour < 12 ? 'AM' : 'PM'}`;
-};
-
-// Minutes since midnight of "HH:MM:SS".
-const minutesOfClock = (value) => {
-  const [hour, minute] = String(value ?? '').split(':').map(Number);
-  return Number.isFinite(hour) && Number.isFinite(minute) ? hour * 60 + minute : null;
-};
-
-// The classes that belong to this user: the student's course and year level,
-// or the classes a teacher teaches.
-//
-// College students here have no section, so a class belongs to a student when
-// the course and the year level match. The section column is left unused.
-const classRoleFilter = (role) =>
-  role === 'teacher'
-    ? `cs.teacher_user_id = $1`
-    : `EXISTS (
-         SELECT 1
-         FROM students s
-         WHERE s.user_id = $1
-           AND UPPER(BTRIM(cs.course)) = UPPER(BTRIM(s.course))
-           AND UPPER(BTRIM(cs.year_level)) = UPPER(BTRIM(s.year_level))
-       )`;
-
-// Map<weekday, { weekday, start_time, end_time, late_after, class_count, campus_name }>
-// for the current term. late_after is the late time of the first class of the day.
-const loadDailyWindows = async (userId, role) => {
-  const result = await pool.query(
-    `
-    SELECT
-      cs.weekday,
-      MIN(cs.start_time) AS start_time,
-      MAX(cs.end_time) AS end_time,
-      (ARRAY_AGG(cs.late_after ORDER BY cs.start_time))[1] AS late_after,
-      (ARRAY_AGG(c.campus_name ORDER BY cs.start_time))[1] AS campus_name,
-      COUNT(*)::int AS class_count
-    FROM class_schedules cs
-    JOIN academic_terms at
-      ON at.id = cs.academic_term_id AND at.is_current = TRUE
-    LEFT JOIN campuses c ON c.id = cs.campus_id
-    WHERE NOT cs.is_archived
-      AND ${classRoleFilter(role)}
-    GROUP BY cs.weekday
-    ORDER BY cs.weekday
-    `,
-    [userId]
-  );
-  const windows = new Map();
-  for (const row of result.rows) {
-    windows.set(Number(row.weekday), {
-      weekday: Number(row.weekday),
-      start_time: row.start_time,
-      end_time: row.end_time,
-      late_after: row.late_after ?? row.start_time,
-      campus_name: row.campus_name ?? null,
-      class_count: row.class_count
-    });
-  }
-  return windows;
-};
-
-const DAILY_LOOKAHEAD_DAYS = 7;
-
-// GET /api/attendance/daily-schedule
-// Today's school day (and the next one when today has none or is over), plus
-// the weekly overview.
-const getDailySchedule = async (req, res) => {
-  try {
-    const userId = req.user.userId;
-    const role = req.user.role?.toLowerCase();
-    if (role !== 'student' && role !== 'teacher') {
-      return res.status(403).json({
-        message: 'Daily schedules are available to students and teachers only.'
-      });
-    }
-
-    const windows = await loadDailyWindows(userId, role);
-    const { date: today, time: nowTime } = manilaNow();
-    const nowMinutes = minutesOfClock(nowTime);
-    const todayMs = Date.parse(`${today}T00:00:00Z`);
-
-    const describe = (window, dayOffset) => ({
-      weekday: window.weekday,
-      day_offset: dayOffset,
-      date: new Date(todayMs + dayOffset * DAY_MS).toISOString().slice(0, 10),
-      start_time: window.start_time,
-      end_time: window.end_time,
-      late_after: window.late_after,
-      campus_name: window.campus_name,
-      class_count: window.class_count
-    });
-
-    let todayInfo = null;
-    const todayWindow = windows.get(weekdayOfDate(today));
-    if (todayWindow) {
-      const start = minutesOfClock(todayWindow.start_time);
-      const end = minutesOfClock(todayWindow.end_time);
-      const state =
-        nowMinutes < start ? 'upcoming' : nowMinutes < end ? 'in_session' : 'finished';
-      todayInfo = {
-        ...describe(todayWindow, 0),
-        state,
-        minutes_until_start: state === 'upcoming' ? start - nowMinutes : null,
-        minutes_until_end: state === 'in_session' ? end - nowMinutes : null
-      };
-    }
-
-    // Shown when today has no classes or the school day is over.
-    let nextDay = null;
-    if (!todayInfo || todayInfo.state === 'finished') {
-      for (let offset = 1; offset <= DAILY_LOOKAHEAD_DAYS; offset += 1) {
-        const window = windows.get(weekdayOfDate(new Date(todayMs + offset * DAY_MS).toISOString().slice(0, 10)));
-        if (window) {
-          nextDay = describe(window, offset);
-          break;
-        }
-      }
-    }
-
-    return res.json({
-      has_schedule: windows.size > 0,
-      today: todayInfo,
-      next_day: nextDay,
-      week: [...windows.values()].map((window) => ({
-        weekday: window.weekday,
-        start_time: window.start_time,
-        end_time: window.end_time,
-        late_after: window.late_after,
-        class_count: window.class_count
-      }))
-    });
-  } catch (error) {
-    console.error('Get daily schedule error:', error);
-    return res.status(500).json({
-      message: 'Could not load your daily schedule.'
-    });
-  }
-};
-
-// Is a student late today? The first time in of the day is late when it is after
-// the late time of the first class. No schedule today means not late. Teachers
-// and later time ins of the same day are never marked late.
-const lateStatusFor = async (userId, role) => {
-  if (role !== 'student') return { late: false };
-  try {
-    const earlier = await pool.query(
-      `
-      SELECT 1
-      FROM attendance
-      WHERE user_id = $1
-        AND attendance_date = (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Manila')::date
-      LIMIT 1
-      `,
-      [userId]
-    );
-    if (earlier.rows.length > 0) return { late: false };
-
-    const windows = await loadDailyWindows(userId, role);
-    const { date, time } = manilaNow();
-    const window = windows.get(weekdayOfDate(date));
-    if (!window) return { late: false };
-
-    const lateAfter = minutesOfClock(window.late_after);
-    if (lateAfter !== null && minutesOfClock(time) > lateAfter) {
-      return { late: true, lateAfter: window.late_after };
-    }
-  } catch (error) {
-    // A schedule problem must never stop a student from timing in.
-    console.error('Late check skipped:', error);
-  }
-  return { late: false };
-};
-
 // Get attendance history for the logged-in student or teacher.
-// One record per time in; the status (present, late, timeout) is the daily one.
+// One record per time in; a day can hold several. The status is present, timeout or absent.
 const getAttendanceHistory = async (req, res) => {
   try {
     const userId = req.user.userId;
@@ -1268,10 +922,20 @@ const getAttendanceHistory = async (req, res) => {
 module.exports = {
   detectCampus,
   checkIn,
-  getMyClassSchedule,
   checkOut,
   updateLocation,
   getActiveAttendance,
   getAttendanceHistory,
-  getDailySchedule
+  // Shared with the photo verification controller.
+  gps: {
+    parseCoordinates,
+    readGpsQuality,
+    isWeakSignal,
+    weakSignalMessage,
+    mockLocationResponse,
+    locateCampus,
+    notAnAttendanceRole,
+    ATTENDANCE_ROLE_MESSAGE,
+    REJECT_MOCK_LOCATION
+  }
 };

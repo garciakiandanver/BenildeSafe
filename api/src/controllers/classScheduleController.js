@@ -662,23 +662,20 @@ const deleteCourse = async (req, res) => {
       return res.status(404).json({ message: `Course "${courseCode}" was not found.` });
     }
 
+    // Class schedules are no longer part of the system, so only students keep a
+    // course from being deleted.
     const usage = await pool.query(
       `
-      SELECT
-        (SELECT COUNT(*) FROM class_schedules
-          WHERE UPPER(BTRIM(course)) = $1 AND NOT is_archived)::int AS schedules,
-        (SELECT COUNT(*) FROM students
-          WHERE UPPER(BTRIM(course)) = $1)::int AS students
+      SELECT COUNT(*)::int AS students
+      FROM students
+      WHERE UPPER(BTRIM(course)) = $1
       `,
       [courseCode]
     );
-    const { schedules, students } = usage.rows[0];
-    if (schedules > 0 || students > 0) {
-      const used = [];
-      if (schedules > 0) used.push(`${schedules} class schedule(s)`);
-      if (students > 0) used.push(`${students} student(s)`);
+    const { students } = usage.rows[0];
+    if (students > 0) {
       return res.status(409).json({
-        message: `Cannot delete ${courseCode}: it is still used by ${used.join(' and ')}.`
+        message: `Cannot delete ${courseCode}: it is still used by ${students} student(s).`
       });
     }
 

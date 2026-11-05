@@ -617,6 +617,31 @@ const addTeacher = async (req, res) => {
 };
 
 // GET /api/admin/campuses
+const resetStudentDevice = async (req, res) => {
+  const userId = String(req.params.userId ?? '');
+  try {
+    const student = await pool.query(
+      'SELECT user_id FROM students WHERE user_id = $1::uuid',
+      [userId]
+    );
+    if (student.rowCount === 0) {
+      return res.status(404).json({ message: 'Student not found.' });
+    }
+    const removed = await pool.query(
+      'DELETE FROM student_devices WHERE user_id = $1::uuid RETURNING user_id',
+      [userId]
+    );
+    return res.json({
+      message: removed.rowCount > 0
+        ? 'The linked phone was reset. The student can sign in on a new phone, and any open login was ended.'
+        : 'This student has no linked phone yet.'
+    });
+  } catch (error) {
+    console.error('Reset student device error:', error);
+    return res.status(500).json({ message: 'Could not reset the linked phone.' });
+  }
+};
+
 const getCampuses = async (req, res) => {
   try {
     const result = await pool.query(
@@ -879,7 +904,8 @@ const getAttendance = async (req, res) => {
         s.student_number AS id_number,
         s.course,
         s.year_level,
-        corr.remarks AS correction_remarks
+        corr.remarks AS correction_remarks,
+        a.user_id
       FROM attendance a
       JOIN students s ON s.user_id = a.user_id
       JOIN users u ON u.id = a.user_id
@@ -1156,6 +1182,7 @@ module.exports = {
   unlinkParentChild,
   updateManagedUser,
   setManagedUserStatus,
+  resetStudentDevice,
   getCampuses,
   updateCampusBoundary,
   addCampus,

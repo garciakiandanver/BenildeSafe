@@ -7,7 +7,7 @@ import 'account_settings_screen.dart';
 import 'admin_attendance_screen.dart';
 import 'admin_bulk_accounts_screen.dart';
 import 'admin_campuses_screen.dart';
-import 'admin_class_schedules_screen.dart';
+import 'admin_courses_screen.dart';
 import 'admin_child_link_requests_screen.dart';
 import 'admin_student_report_screen.dart';
 import 'admin_users_screen.dart';
@@ -41,12 +41,10 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
 
   // Two more things worth knowing about, both read from small tables.
   //
-  // A campus with no boundary drawn cannot accept a single time in, and a term
-  // with no class schedules leaves every student without a daily schedule and
-  // nobody ever marked late. Neither shows up anywhere else on this screen,
-  // and both are silent: the system keeps running and simply does nothing.
+  // A campus with no boundary drawn cannot accept a single time in. It shows up
+  // nowhere else on this screen and it is silent: the system keeps running and
+  // simply does nothing.
   int? _campusesWithoutBoundary;
-  int? _schedulesThisTerm;
 
   // A running clock in the header. It is the one moving thing on the screen,
   // and it is what tells an administrator at a glance that the page is live
@@ -109,12 +107,11 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   // ── Navigation ───────────────────────────────────────────────────
 
   // Counts the parent requests to link a child that are still pending.
-  /// Two cheap checks that nothing else on this screen would reveal.
+  /// A cheap check that nothing else on this screen would reveal.
   ///
-  /// Both fail quietly in a half-set-up school, which is exactly why they are
-  /// worth showing: a campus with no boundary refuses every time in, and a
-  /// term with no schedules means no daily schedule and no late, with no
-  /// error anywhere to say so.
+  /// It fails quietly in a half-set-up school, which is exactly why it is worth
+  /// showing: a campus with no boundary refuses every time in, with no error
+  /// anywhere to say so.
   Future<void> _loadSetupSignals() async {
     try {
       final campuses = await ApiService.getAdminCampuses(token: widget.token);
@@ -131,24 +128,6 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       }
     } catch (error) {
       debugPrint('Could not read the campuses: $error');
-    }
-
-    try {
-      final terms = await ApiService.getAcademicTerms(token: widget.token);
-      final list = terms['terms'];
-      if (list is List && mounted) {
-        final current = list.firstWhere(
-          (item) => item is Map && item['is_current'] == true,
-          orElse: () => null,
-        );
-        setState(() {
-          _schedulesThisTerm = current == null
-              ? 0
-              : (current['schedule_count'] as num?)?.toInt() ?? 0;
-        });
-      }
-    } catch (error) {
-      debugPrint('Could not read the academic terms: $error');
     }
   }
 
@@ -190,8 +169,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   Future<void> _openAttendance() =>
       _openScreen(AdminAttendanceScreen(token: widget.token));
 
-  Future<void> _openSchedules() =>
-      _openScreen(AdminClassSchedulesScreen(token: widget.token));
+  Future<void> _openCourses() =>
+      _openScreen(AdminCoursesScreen(token: widget.token));
 
   Future<void> _openCampuses() =>
       _openScreen(AdminCampusesScreen(token: widget.token));
@@ -226,8 +205,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               onTap: () => Navigator.pop(sheetContext, 'bulk'),
             ),
             ListTile(
-              leading: const Icon(Icons.calendar_month_outlined),
-              title: const Text('Class schedules'),
+              leading: const Icon(Icons.school_outlined),
+              title: const Text('Courses'),
               onTap: () => Navigator.pop(sheetContext, 'schedules'),
             ),
             ListTile(
@@ -260,7 +239,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         await _openBulkAccounts();
         break;
       case 'schedules':
-        await _openSchedules();
+        await _openCourses();
         break;
       case 'campuses':
         await _openCampuses();
@@ -756,15 +735,6 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
           count: _campusesWithoutBoundary,
           onTap: _openCampuses,
         ),
-      if (_schedulesThisTerm == 0)
-        _hubRow(
-          icon: Icons.event_busy_outlined,
-          color: stop.content,
-          title: 'No class schedules this term',
-          subtitle: 'Without them there is no daily schedule and no late',
-          action: 'Add them',
-          onTap: _openSchedules,
-        ),
     ];
 
     final attention = _hubPanel(
@@ -788,8 +758,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                   const SizedBox(width: AppSpace.sm),
                   Expanded(
                     child: Text(
-                      'Requests are cleared, every campus has a boundary, and '
-                      'this term has class schedules.',
+                      'Requests are cleared and every campus has a boundary.',
                       style: theme.textTheme.bodyMedium?.copyWith(
                         color: theme.colorScheme.onSurfaceVariant,
                         height: 1.4,
@@ -817,12 +786,12 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
           onTap: _openBulkAccounts,
         ),
         _hubRow(
-          icon: Icons.calendar_month_outlined,
+          icon: Icons.school_outlined,
           color: AppColors.accentGreen,
-          title: 'Class schedules',
-          subtitle: 'The hours that decide the daily schedule and late',
+          title: 'Courses',
+          subtitle: 'The courses and departments students belong to',
           action: 'Open',
-          onTap: _openSchedules,
+          onTap: _openCourses,
         ),
         _hubRow(
           icon: Icons.location_city_outlined,
@@ -1182,7 +1151,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                 onUsers: _openUsers,
                 onBulkAccounts: _openBulkAccounts,
                 onAttendance: _openAttendance,
-                onSchedules: _openSchedules,
+                onCourses: _openCourses,
                 onCampuses: _openCampuses,
                 onChildLinks: _openChildLinkRequests,
                 onReports: _openReports,
@@ -1332,7 +1301,7 @@ class _Sidebar extends StatelessWidget {
   final VoidCallback onUsers;
   final VoidCallback onBulkAccounts;
   final VoidCallback onAttendance;
-  final VoidCallback onSchedules;
+  final VoidCallback onCourses;
   final VoidCallback onCampuses;
   final VoidCallback onChildLinks;
   final VoidCallback onReports;
@@ -1344,7 +1313,7 @@ class _Sidebar extends StatelessWidget {
     required this.onUsers,
     required this.onBulkAccounts,
     required this.onAttendance,
-    required this.onSchedules,
+    required this.onCourses,
     required this.onCampuses,
     required this.onChildLinks,
     required this.onReports,
@@ -1466,10 +1435,10 @@ class _Sidebar extends StatelessWidget {
                 ),
                 _navItem(
                   context,
-                  icon: Icons.calendar_month_outlined,
-                  activeIcon: Icons.calendar_month_rounded,
-                  label: 'Class schedules',
-                  onTap: onSchedules,
+                  icon: Icons.school_outlined,
+                  activeIcon: Icons.school_rounded,
+                  label: 'Courses',
+                  onTap: onCourses,
                 ),
                 _navItem(
                   context,

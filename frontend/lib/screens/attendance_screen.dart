@@ -6,7 +6,6 @@ import 'package:geolocator/geolocator.dart';
 import 'login_screen.dart';
 import '../services/profile_state.dart';
 import '../services/session_service.dart';
-import '../widgets/daily_schedule_card.dart';
 
 import '../services/api_service.dart';
 import '../services/location_service.dart';
@@ -14,6 +13,7 @@ import 'attendance_history_screen.dart';
 import 'notifications_screen.dart';
 import 'teacher_dashboard_screen.dart';
 import '../widgets/app_ui.dart';
+import '../widgets/photo_verify_card.dart';
 import 'account_settings_screen.dart';
 import '../utils/manila_time.dart';
 
@@ -55,6 +55,15 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   String _campusDetectionMessage = '';
   String _outsideSince = '';
   bool _confirmingOutside = false;
+
+  // Automatic time in. While the student is not timed in, the app checks the
+  // location once a minute and the server times the student in when they are
+  // inside the campus. After a time out the student pressed by hand, this stays
+  // paused until they have been seen outside the campus, so the app does not
+  // time them straight back in.
+  Timer? _autoTimer;
+  bool _autoPaused = false;
+  bool _autoBusy = false;
 
   // True once a location check has answered, so "not inside any campus" can
   // be told apart from "not checked yet".
@@ -118,18 +127,15 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
     if (_isDetectingCampus) return 'Checking where you are...';
     if (_isCheckedIn) {
-      if (_outsideSince.isNotEmpty) {
-        final left = ManilaTime.parse(_outsideSince);
-        final deadline = left == null
-            ? ''
-            : ' before ${ManilaTime.clock(left.add(const Duration(minutes: 30)))}';
-        return 'You left the campus. Go back inside$deadline, or you will be '
-            'timed out automatically.';
-      }
-      return 'You are timed in. Press Time out when you leave the campus.';
+      return 'You are timed in. You will be timed out automatically when you '
+          'leave the campus.';
     }
     if (_detectedCampus.isNotEmpty) {
-      return 'You are inside $_detectedCampus. You can time in now.';
+      return _autoPaused
+          ? 'You are inside $_detectedCampus. Press Time in when you want to '
+                'time in again.'
+          : 'You are inside $_detectedCampus. You are timed in automatically, '
+                'or press Time in.';
     }
     if (_campusDetectionMessage.isNotEmpty) return _campusDetectionMessage;
     return 'Press "Check my location" to see whether you are inside a campus.';
@@ -192,7 +198,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         // home screen stays unknown until the first time in.
         if (!_hasAutoDetected) {
           _hasAutoDetected = true;
-          unawaited(_detectCampus());
+          unawaited(_detectCampus().then((_) => _startAutoWatch()));
+        } else {
+          _startAutoWatch();
         }
       }
     } catch (error) {
@@ -301,8 +309,87 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   void dispose() {
     _locationSubscription?.cancel();
     _heartbeatTimer?.cancel();
+    _autoTimer?.cancel();
     ProfileState.instance.removeListener(_onProfileChanged);
     super.dispose();
+  }
+
+  // ── automatic time in ────────────────────────────────────────────────
+
+  void _startAutoWatch() {
+    if (!mounted || widget.isTeacher || _isCheckedIn) return;
+    if (_autoTimer?.isActive ?? false) return;
+    _autoTimer = Timer.periodic(const Duration(minutes: 1), (_) => _autoTick());
+    unawaited(_autoTick());
+  }
+
+  void _stopAutoWatch() {
+    _autoTimer?.cancel();
+    _autoTimer = null;
+  }
+
+  // One look at the location while the student is not timed in. The server
+  // decides: it times the student in only when the reading is inside the campus
+  // line, and otherwise answers quietly with auto_skipped.
+  Future<void> _autoTick() async {
+    if (!mounted || _isCheckedIn || _isLoading || _autoBusy) return;
+    _autoBusy = true;
+    try {
+      final position = await LocationService.getCurrentLocation();
+      if (position == null || !mounted || _isCheckedIn || _isLoading) return;
+
+      if (_autoPaused) {
+        // Only watching for the student to leave. A campus answer means they
+        // are still inside; "outside all configured campus boundaries" means
+        // they left, so automatic time in is switched on again.
+        try {
+          await ApiService.detectCampus(
+            token: widget.token,
+            latitude: position.latitude,
+            longitude: position.longitude,
+            accuracy: position.accuracy,
+            isMocked: position.isMocked,
+          );
+        } catch (error) {
+          if (error.toString().toLowerCase().contains('outside')) {
+            _autoPaused = false;
+            if (mounted) setState(() {});
+          }
+        }
+        return;
+      }
+
+      final result = await ApiService.checkIn(
+        token: widget.token,
+        latitude: position.latitude,
+        longitude: position.longitude,
+        accuracy: position.accuracy,
+        isMocked: position.isMocked,
+        auto: true,
+      );
+      if (!mounted || _isCheckedIn) return;
+      if (result['auto_skipped'] == true) return;
+
+      setState(() {
+        _isCheckedIn = true;
+        _campus = result['campus']?['name'] ?? 'Unknown campus';
+        _detectedCampus = _campus;
+        _campusDetectionMessage = '';
+        _outsideSince = '';
+        _status = result['message'] ?? 'Timed in automatically.';
+        _notice =
+            result['notificationWarning']?.toString() ??
+            'You were timed in automatically.';
+      });
+      _stopAutoWatch();
+      _startLocationMonitoring();
+    } catch (error) {
+      // A missed automatic check is not shown to the student; the next one
+      // runs in a minute, and the Time in button still works.
+      debugPrint('Automatic time in skipped: $error');
+    } finally {
+      _autoBusy = false;
+    }
   }
 
   // Asks the user to confirm Time In / Time Out so a stray touch or a double
@@ -390,6 +477,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         _notice = result['notificationWarning']?.toString() ?? '';
       });
 
+      _stopAutoWatch();
       _startLocationMonitoring();
     } catch (error) {
       if (!mounted) return;
@@ -469,12 +557,18 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           _outsideSince = '';
           _campusDetectionMessage = '';
           _detectedCampus = '';
-          _notice = 'You were timed out automatically because you stayed '
-              'outside the campus.';
+          _notice = 'You left the campus, so you were timed out '
+              'automatically.';
           _locationSubscription?.cancel();
           _heartbeatTimer?.cancel();
         }
       });
+      // After an automatic time out the app keeps watching, and times the
+      // student in again when they come back inside.
+      if (result['status'] == 'Timed Out') {
+        _autoPaused = false;
+        _startAutoWatch();
+      }
     } catch (error) {
       if (!mounted) return;
 
@@ -488,8 +582,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   }
 
   // Takes a fresh, precise reading a few seconds later and reports it as the
-  // confirmation. Only a reading that is still outside starts the 30-minute
-  // timer and alerts the parent.
+  // confirmation. Only a reading that is still outside times the student out
+  // and alerts the parent.
   Future<void> _confirmOutside() async {
     if (_confirmingOutside) return;
     _confirmingOutside = true;
@@ -548,9 +642,13 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         _campusDetectionMessage = '';
         _detectedCampus = '';
         _hasReading = false;
+        // The student timed out by hand: do not time them straight back in
+        // while they are still inside.
+        _autoPaused = true;
         _status = result['message'] ?? 'Check-out successful.';
         _notice = result['notificationWarning']?.toString() ?? '';
       });
+      _startAutoWatch();
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -858,8 +956,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     );
   }
 
-  /// Who you are, where you are, and today's classes. Three blocks, in the
-  /// order a student needs them.
+  /// Who you are and where you are.
   Widget _buildHome(BoxConstraints constraints) {
     final narrow = constraints.maxWidth < 400;
     final pad = narrow ? AppSpace.lg : AppSpace.xl;
@@ -872,7 +969,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             order: 0,
             child: BrandBand(
               greeting: _firstName.isNotEmpty ? 'Hello, $_firstName' : 'Hello',
-              subtitle: 'Time in when you arrive, time out when you leave.',
+              subtitle: 'You are timed in and out automatically on campus.',
               name: _displayName,
               photo: ProfileState.instance.photo,
               maxWidth: 760,
@@ -887,11 +984,11 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     Reveal(order: 1, child: _campusCard(narrow)),
-                    const SizedBox(height: AppSpace.md),
-                    Reveal(
-                      order: 2,
-                      child: DailyScheduleCard(token: widget.token),
-                    ),
+                    if (_isCheckedIn)
+                      PhotoVerifyCard(
+                        token: widget.token,
+                        getPosition: _getBestPosition,
+                      ),
                   ],
                 ),
               ),

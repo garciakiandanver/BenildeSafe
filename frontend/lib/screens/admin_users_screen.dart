@@ -368,6 +368,53 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
     }
   }
 
+  Future<void> _resetDevice(Map<String, dynamic> user) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Reset linked phone?'),
+        content: Text(
+          '${_getFullName(user)} will be signed out and can sign in on a new phone. '
+          'The account links to the next phone it signs in on.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Reset'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || confirmed != true) return;
+
+    try {
+      final result = await ApiService.resetStudentDevice(
+        token: widget.token,
+        userId: user['user_id'].toString(),
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            result['message']?.toString() ?? 'The linked phone was reset.',
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(error.toString().replaceFirst('Exception: ', '')),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
   Future<void> _changeUserStatus(Map<String, dynamic> user) async {
     final isActive = user['status'] == 'active';
     final nextStatus = isActive ? 'inactive' : 'active';
@@ -658,6 +705,8 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
           _editUser(user, role);
         } else if (action == 'children') {
           _manageParentChildren(user);
+        } else if (action == 'reset-device') {
+          _resetDevice(user);
         } else {
           _changeUserStatus(user);
         }
@@ -677,6 +726,15 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
             child: ListTile(
               leading: Icon(Icons.family_restroom_outlined),
               title: Text('Linked children'),
+              contentPadding: EdgeInsets.zero,
+            ),
+          ),
+        if (role == 'Student')
+          const PopupMenuItem(
+            value: 'reset-device',
+            child: ListTile(
+              leading: Icon(Icons.phonelink_erase_outlined),
+              title: Text('Reset linked phone'),
               contentPadding: EdgeInsets.zero,
             ),
           ),

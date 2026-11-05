@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import '../services/api_service.dart';
 import '../utils/manila_time.dart';
@@ -51,6 +52,8 @@ class _AdminAttendanceScreenState extends State<AdminAttendanceScreen> {
   bool _isLoading = true;
   String _error = '';
   List<dynamic> _attendance = [];
+  // Students who verified the selected day with a photo, by user id.
+  Map<String, Map<String, dynamic>> _photos = {};
   late DateTime _selectedDate = _today;
   int _attendanceRequestId = 0;
   int _shown = _pageSize;
@@ -113,6 +116,7 @@ class _AdminAttendanceScreenState extends State<AdminAttendanceScreen> {
         _attendance = result['attendance'] ?? [];
         _isLoading = false;
       });
+      _loadPhotos(requestId);
     } catch (error) {
       if (!mounted || requestId != _attendanceRequestId) return;
       setState(() {
@@ -120,6 +124,97 @@ class _AdminAttendanceScreenState extends State<AdminAttendanceScreen> {
         _isLoading = false;
       });
     }
+  }
+
+  // Optional: the day still loads if the photos cannot be read.
+  Future<void> _loadPhotos(int requestId) async {
+    try {
+      final result = await ApiService.getAdminPhotos(
+        token: widget.token,
+        date: _dateToString(_selectedDate),
+      );
+      if (!mounted || requestId != _attendanceRequestId) return;
+      final map = <String, Map<String, dynamic>>{};
+      for (final item in (result['photos'] as List? ?? [])) {
+        final row = Map<String, dynamic>.from(item as Map);
+        map[row['user_id'].toString()] = row;
+      }
+      setState(() => _photos = map);
+    } catch (_) {
+      if (!mounted || requestId != _attendanceRequestId) return;
+      setState(() => _photos = {});
+    }
+  }
+
+  Future<void> _showPhoto(dynamic record) async {
+    final userId = record['user_id']?.toString() ?? '';
+    final date = _dateToString(_selectedDate);
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text((record['full_name'] ?? 'Verification photo').toString()),
+        content: FutureBuilder<Map<String, dynamic>>(
+          future: ApiService.getAdminPhoto(
+            token: widget.token,
+            userId: userId,
+            date: date,
+          ),
+          builder: (context, snapshot) {
+            if (snapshot.connectionState != ConnectionState.done) {
+              return const SizedBox(
+                height: 120,
+                child: Center(child: CircularProgressIndicator()),
+              );
+            }
+            if (snapshot.hasError) {
+              return Text(
+                snapshot.error.toString().replaceFirst('Exception: ', ''),
+              );
+            }
+            final data = snapshot.data ?? {};
+            final photo = data['photo']?.toString();
+            final caption = [
+              'Taken ${_formatTime(data['captured_at']?.toString())}',
+              if (data['campus_name'] != null) 'at ${data['campus_name']}',
+            ].join(' ');
+            return SizedBox(
+              width: 360,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (photo != null && photo.contains(','))
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Image.memory(
+                        base64Decode(photo.split(',').last),
+                        fit: BoxFit.contain,
+                      ),
+                    )
+                  else
+                    const Text(
+                      'The image was removed after 30 days. The day stays verified.',
+                    ),
+                  const SizedBox(height: 8),
+                  Text(caption),
+                  const SizedBox(height: 4),
+                  const Text(
+                    'The location was checked by the server when the photo was taken.',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _goToDay(DateTime day) {
@@ -258,8 +353,12 @@ class _AdminAttendanceScreenState extends State<AdminAttendanceScreen> {
     TimeOfDay? timeIn = originalIn;
     TimeOfDay? timeOut = originalOut;
     final remarksController = TextEditingController();
-    var selectedStatus = _status(record).isEmpty ? 'present' : _status(record);
-    const statuses = ['present', 'late', 'absent', 'timeout'];
+    // Late no longer exists. An old record that was marked late is shown as
+    // present, and saving the correction keeps it that way.
+    const statuses = ['present', 'absent', 'timeout'];
+    var selectedStatus = statuses.contains(_status(record))
+        ? _status(record)
+        : 'present';
     var problem = '';
 
     String cleanRemarks() =>
@@ -622,9 +721,9 @@ class _AdminAttendanceScreenState extends State<AdminAttendanceScreen> {
     );
   }
 
-  /// The day in four numbers: who came, who is still inside, who was late,
-  /// and who was timed out by the system. Students, not records: two visits
-  /// are one student.
+  /// The day in four numbers: who came, who is still inside, who was marked
+  /// absent, and who was timed out by the system. Students, not records: two
+  /// visits are one student.
   Widget _summary(List<dynamic> records) {
     final theme = Theme.of(context);
     Set<String> who(bool Function(dynamic) test) => {
@@ -633,7 +732,7 @@ class _AdminAttendanceScreenState extends State<AdminAttendanceScreen> {
     };
     final came = who((_) => true).length;
     final inside = who((r) => r['time_out'] == null).length;
-    final lateCount = who((r) => _status(r) == 'late').length;
+    final absentCount = who((r) => _status(r) == 'absent').length;
     final timedOut = who((r) => _status(r) == 'timeout').length;
 
     Widget tile(String label, int value, IconData icon, Color color) => AppPanel(
@@ -678,10 +777,11 @@ class _AdminAttendanceScreenState extends State<AdminAttendanceScreen> {
 
     final good = StatusTone.forLevel(context, StatusLevel.good).content;
     final caution = StatusTone.forLevel(context, StatusLevel.caution).content;
+    final stop = StatusTone.forLevel(context, StatusLevel.stop).content;
     final tiles = [
       tile('Students', came, Icons.groups_outlined, theme.colorScheme.primary),
       tile('Still inside', inside, Icons.location_on_outlined, good),
-      tile('Late', lateCount, Icons.schedule_rounded, caution),
+      tile('Absent', absentCount, Icons.event_busy_outlined, stop),
       tile('Auto timed out', timedOut, Icons.timer_off_outlined, caution),
     ];
     return LayoutBuilder(
@@ -768,6 +868,32 @@ class _AdminAttendanceScreenState extends State<AdminAttendanceScreen> {
           overflow: TextOverflow.ellipsis,
           style: theme.textTheme.bodySmall?.copyWith(color: muted),
         ),
+        if (_photos.containsKey(record['user_id']?.toString()))
+          InkWell(
+            onTap: () => _showPhoto(record),
+            child: Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.verified_rounded,
+                    size: 15,
+                    color: theme.colorScheme.primary,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    'Photo verified',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.primary,
+                      fontWeight: FontWeight.w700,
+                      decoration: TextDecoration.underline,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
       ],
     );
 

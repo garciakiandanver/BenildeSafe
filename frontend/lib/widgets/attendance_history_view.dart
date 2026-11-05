@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 
+import '../utils/dtr.dart';
 import '../utils/manila_time.dart';
 import 'app_ui.dart';
 import 'date_filter_bar.dart';
+import 'dtr_table.dart';
 
-/// A student's attendance, newest day first, grouped by month, with a date
-/// filter and three counts above it.
+/// A student's attendance as a daily time record (DTR), newest day first,
+/// one table for each month, with a date filter and counts above it.
 ///
 /// The student's own Attendance screen and the parent's view of a child are
 /// this one widget, so the two can never drift apart: a fix or a new column
@@ -56,15 +58,6 @@ class _AttendanceHistoryViewState extends State<AttendanceHistoryView> {
     'November',
     'December',
   ];
-  static const _weekdays = [
-    'Monday',
-    'Tuesday',
-    'Wednesday',
-    'Thursday',
-    'Friday',
-    'Saturday',
-    'Sunday',
-  ];
 
   bool _isLoading = true;
   String _error = '';
@@ -87,10 +80,10 @@ class _AttendanceHistoryViewState extends State<AttendanceHistoryView> {
       )
       .toList();
 
-  /// Days, not records: two visits on one date are one day.
-  int get _visibleDayCount => {
-    for (final record in _visible) record['attendance_date']?.toString() ?? '',
-  }.where((date) => date.isNotEmpty).length;
+  /// One entry per day, oldest first. Two visits on one date are one day.
+  List<DtrDay> get _visibleDays => buildDtrDays(_visible);
+
+  int get _visibleDayCount => _visibleDays.length;
 
   @override
   void initState() {
@@ -122,65 +115,16 @@ class _AttendanceHistoryViewState extends State<AttendanceHistoryView> {
     }
   }
 
-  // The server sends Manila time (for example 2026-10-18T22:59:00). It is
-  // shown as it is, on any device and in any browser time zone.
-  String _formatTime(dynamic value) => ManilaTime.time(value, fallback: '');
-
-  String _status(Map<String, dynamic> record) =>
-      record['status']?.toString().toLowerCase() ?? '';
-
-  /// "timeout" is the server's word; a parent reads "Auto timed out".
-  String _statusLabel(String status) {
-    switch (status) {
-      case 'timeout':
-        return 'Auto timed out';
-      case '':
-        return 'Recorded';
-      default:
-        return status[0].toUpperCase() + status.substring(1);
-    }
-  }
-
-  /// The same colours as the parent's home screen, so a day that is gold
-  /// there is gold here too, and the same for the student and the parent.
-  StatusLevel _statusLevel(String status) {
-    switch (status) {
-      case 'present':
-        return StatusLevel.good;
-      case 'late':
-      case 'timeout':
-        return StatusLevel.caution;
-      case 'absent':
-        return StatusLevel.stop;
-      default:
-        return StatusLevel.neutral;
-    }
-  }
-
-  bool _isToday(DateTime? date) {
-    if (date == null) return false;
-    final now = ManilaTime.now();
-    return date.year == now.year &&
-        date.month == now.month &&
-        date.day == now.day;
-  }
-
   // ------------------------------------------------------------------ parts
 
   Widget _summary() {
     final theme = Theme.of(context);
-    // A student can time in and out more than once a day, so these count
-    // days, not records: two visits on October 31 are one day.
-    Set<String> daysWhere(bool Function(Map<String, dynamic>) test) => {
-      for (final record in _visible)
-        if (test(record)) record['attendance_date']?.toString() ?? '',
-    }..remove('');
-    final dayCount = daysWhere((_) => true).length;
-    final lateCount = daysWhere((r) => _status(r) == 'late').length;
-    final timedOut = daysWhere((r) => _status(r) == 'timeout').length;
-    final absent = daysWhere((r) => _status(r) == 'absent').length;
+    final days = _visibleDays;
+    final absent = days.where((day) => day.absent).length;
+    final onCampus = days.length - absent;
+    final totalMinutes = days.fold<int>(0, (sum, day) => sum + day.minutes);
 
-    Widget tile(String label, int value, Color color, IconData icon) {
+    Widget tile(String label, Widget value, Color color, IconData icon) {
       return Expanded(
         child: AppPanel(
           padding: const EdgeInsets.all(AppSpace.md),
@@ -189,13 +133,7 @@ class _AttendanceHistoryViewState extends State<AttendanceHistoryView> {
             children: [
               Icon(icon, size: 18, color: color),
               const SizedBox(height: AppSpace.sm),
-              CountUp(
-                value: value,
-                style: theme.textTheme.headlineSmall?.copyWith(
-                  fontWeight: FontWeight.w800,
-                  height: 1,
-                ),
-              ),
+              value,
               const SizedBox(height: AppSpace.xs),
               Text(
                 label,
@@ -212,25 +150,36 @@ class _AttendanceHistoryViewState extends State<AttendanceHistoryView> {
       );
     }
 
-    final caution = StatusTone.forLevel(context, StatusLevel.caution).content;
+    final valueStyle = theme.textTheme.headlineSmall?.copyWith(
+      fontWeight: FontWeight.w800,
+      height: 1,
+    );
     final stop = StatusTone.forLevel(context, StatusLevel.stop).content;
     return Row(
       children: [
         tile(
           'Days on campus',
-          dayCount - absent,
+          CountUp(value: onCampus, style: valueStyle),
           theme.colorScheme.primary,
           Icons.event_available_outlined,
         ),
         const SizedBox(width: AppSpace.sm),
-        tile('Days late', lateCount, caution, Icons.schedule_rounded),
-        const SizedBox(width: AppSpace.sm),
-        tile('Days auto timed out', timedOut, caution, Icons.timer_off_outlined),
+        tile(
+          'Hours on campus',
+          Text(formatDuration(totalMinutes), style: valueStyle),
+          theme.colorScheme.primary,
+          Icons.schedule_rounded,
+        ),
         // Only when the school has marked a day absent, so most students
-        // keep the three tiles that fit a small phone.
+        // keep the two tiles that fit a small phone.
         if (absent > 0) ...[
           const SizedBox(width: AppSpace.sm),
-          tile('Days absent', absent, stop, Icons.event_busy_outlined),
+          tile(
+            'Days absent',
+            CountUp(value: absent, style: valueStyle),
+            stop,
+            Icons.event_busy_outlined,
+          ),
         ],
       ],
     );
@@ -250,192 +199,31 @@ class _AttendanceHistoryViewState extends State<AttendanceHistoryView> {
     );
   }
 
-  Widget _timeBlock(String label, String value, String empty) {
-    final theme = Theme.of(context);
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.symmetric(
-          horizontal: AppSpace.md,
-          vertical: AppSpace.sm,
-        ),
-        decoration: BoxDecoration(
-          color: theme.colorScheme.surfaceContainerHighest.withValues(
-            alpha: 0.5,
-          ),
-          borderRadius: BorderRadius.circular(AppRadius.block),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              label,
-              style: theme.textTheme.labelSmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              value.isEmpty ? empty : value,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.titleSmall?.copyWith(
-                fontWeight: FontWeight.w800,
-                color: value.isEmpty ? theme.colorScheme.onSurfaceVariant : null,
-                fontFeatures: const [FontFeature.tabularFigures()],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _dayCard(Map<String, dynamic> record) {
-    final theme = Theme.of(context);
-    final date = ManilaTime.parse(record['attendance_date']);
-    final status = _status(record);
-    final level = _statusLevel(status);
-    final tone = StatusTone.forLevel(context, level);
-    final campus = record['campus_name']?.toString() ?? '';
-    final today = _isToday(date);
-    final stillInside = today && record['time_out'] == null;
-
-    return AppPanel(
-      accent: level == StatusLevel.neutral || level == StatusLevel.good
-          ? null
-          : tone.content,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      date == null
-                          ? 'Unknown date'
-                          : today
-                          ? 'Today'
-                          : _weekdays[date.weekday - 1],
-                      style: theme.textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    Text(
-                      ManilaTime.longDate(
-                        record['attendance_date'],
-                        fallback: '',
-                      ),
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              StatusBadge(label: _statusLabel(status), tone: tone),
-            ],
-          ),
-          const SizedBox(height: AppSpace.md),
-          Row(
-            children: [
-              _timeBlock('Time in', _formatTime(record['time_in']), '—'),
-              const SizedBox(width: AppSpace.sm),
-              _timeBlock(
-                'Time out',
-                _formatTime(record['time_out']),
-                stillInside ? 'Still inside' : '—',
-              ),
-            ],
-          ),
-          if ((record['correction_remarks'] ?? '').toString().trim().isNotEmpty) ...[
-            const SizedBox(height: AppSpace.md),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Icon(
-                  Icons.edit_note_rounded,
-                  size: 16,
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-                const SizedBox(width: AppSpace.xs),
-                Expanded(
-                  child: Text(
-                    'Corrected: ${record['correction_remarks'].toString().trim()}',
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
-                      fontStyle: FontStyle.italic,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ],
-          if (campus.isNotEmpty) ...[
-            const SizedBox(height: AppSpace.md),
-            Row(
-              children: [
-                Icon(
-                  Icons.location_on_outlined,
-                  size: 16,
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-                const SizedBox(width: AppSpace.xs),
-                Expanded(
-                  child: Text(
-                    campus,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  /// The newest [_shown] days, with a month heading wherever the month
-  /// changes. On a wide screen the cards sit two to a row.
+  /// Each month is a heading and a DTR table, newest day first. Only the newest
+  /// [_shown] days are built; the rest arrive 30 at a time.
   List<Widget> _days(double width) {
     final widgets = <Widget>[];
-    final records = _visible.take(_shown).toList();
-    final twoColumns = width >= 640;
-    const gap = AppSpace.sm;
-    final cardWidth = twoColumns ? (width - gap) / 2 : width;
+    final days = _visibleDays.reversed.take(_shown).toList();
 
     var order = 3;
     String? lastMonth;
-    var group = <Widget>[];
+    var group = <DtrDay>[];
 
     void flush() {
       if (group.isEmpty) return;
-      widgets.add(
-        Wrap(spacing: gap, runSpacing: gap, children: List.of(group)),
-      );
-      group = <Widget>[];
+      widgets.add(Reveal(order: order++, child: DtrTable(days: List.of(group))));
+      group = <DtrDay>[];
     }
 
-    for (final record in records) {
-      final date = ManilaTime.parse(record['attendance_date']);
+    for (final day in days) {
+      final date = day.day;
       final month = date == null ? null : '${date.year}-${date.month}';
       if (date != null && month != lastMonth) {
         flush();
         widgets.add(Reveal(order: order, child: _monthLabel(date)));
         lastMonth = month;
       }
-      group.add(
-        SizedBox(
-          width: cardWidth,
-          child: Reveal(order: order++, child: _dayCard(record)),
-        ),
-      );
+      group.add(day);
     }
     flush();
     return widgets;
@@ -528,10 +316,10 @@ class _AttendanceHistoryViewState extends State<AttendanceHistoryView> {
                               icon: Icons.event_busy_outlined,
                               title: 'No attendance records yet',
                               message: widget.forParent
-                                  ? 'Each day your child times in at a '
-                                        'campus will appear here.'
-                                  : 'Each day you time in at a campus will '
-                                        'appear here.',
+                                  ? 'The days your child is on campus will '
+                                        'appear here.'
+                                  : 'The days you are on campus will appear '
+                                        'here.',
                             ),
                           ),
                         )
@@ -564,7 +352,7 @@ class _AttendanceHistoryViewState extends State<AttendanceHistoryView> {
                         else ...[
                           Reveal(order: 2, child: _summary()),
                           ..._days(width),
-                          if (_visible.length > _shown) ...[
+                          if (_visibleDays.length > _shown) ...[
                             const SizedBox(height: AppSpace.md),
                             Center(
                               child: OutlinedButton.icon(
@@ -573,7 +361,7 @@ class _AttendanceHistoryViewState extends State<AttendanceHistoryView> {
                                 icon: const Icon(Icons.expand_more_rounded),
                                 label: Text(
                                   'Show older days '
-                                  '(${_visible.length - _shown} more)',
+                                  '(${_visibleDays.length - _shown} more)',
                                 ),
                               ),
                             ),

@@ -216,7 +216,6 @@ class _AttendanceTrendChartState extends State<AttendanceTrendChart> {
       _trend.fold<int>(0, (m, d) => d.students > m ? d.students : m),
     );
     final total = _trend.fold<int>(0, (s, d) => s + d.students);
-    final lateTotal = _trend.fold<int>(0, (s, d) => s + d.lateCount);
     final average = _trend.isEmpty ? 0.0 : total / _trend.length;
     final today = ManilaTime.now();
 
@@ -247,13 +246,12 @@ class _AttendanceTrendChartState extends State<AttendanceTrendChart> {
           children: [
             Text(
               '${average.toStringAsFixed(1)} a day on average'
-              '${_share(average)}  ·  $lateTotal late',
+              '${_share(average)}',
               style: theme.textTheme.bodySmall?.copyWith(
                 fontWeight: FontWeight.w600,
               ),
             ),
-            swatch(onTimeColor, 'On time'),
-            swatch(lateColor, 'Late'),
+            swatch(onTimeColor, 'Students on campus'),
           ],
         ),
         const SizedBox(height: AppSpace.md),

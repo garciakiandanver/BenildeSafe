@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const pool = require('../config/database');
+const { sessionIsCurrent } = require('../services/deviceBinding');
 
 // While a user still has a temporary password, only these calls are allowed.
 const ALLOWED_WHEN_PASSWORD_CHANGE_REQUIRED = [
@@ -36,6 +37,18 @@ const authenticateToken = async (req, res, next) => {
       return res.status(403).json({
         message: 'This account is inactive.'
       });
+    }
+
+    // A student is signed in on one phone at a time: a newer login, or a reset
+    // of the linked phone by the school, ends this token.
+    if (String(decoded.role ?? '').toLowerCase() === 'student') {
+      const current = await sessionIsCurrent(pool, decoded.userId, decoded.sid);
+      if (!current) {
+        return res.status(401).json({
+          code: 'SESSION_REPLACED',
+          message: 'You were signed out because this account was signed in on a phone again, or the school reset the linked phone. Please sign in again.'
+        });
+      }
     }
 
     if (account.rows[0].must_change_password === true) {

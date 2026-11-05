@@ -4,16 +4,18 @@ import 'package:flutter/services.dart';
 import '../services/api_service.dart';
 import '../services/profile_state.dart';
 import '../services/session_service.dart';
+import '../utils/dtr.dart';
+import '../utils/manila_time.dart';
 import '../widgets/app_ui.dart';
-import '../widgets/daily_schedule_card.dart';
+import '../widgets/dtr_table.dart';
 import 'account_settings_screen.dart';
 import 'notifications_screen.dart';
-import 'teacher_class_schedule_screen.dart';
 
 /// Home screen of a teacher.
 ///
-/// Teachers do not record their own attendance. They see the classes they
-/// teach and the attendance of the students in those classes.
+/// Teachers do not record their own attendance. They choose a course and a year
+/// level and read the daily time record (DTR) of its students, one month at a
+/// time. The report is read only.
 class TeacherDashboardScreen extends StatefulWidget {
   final String token;
   final String email;
@@ -35,10 +37,38 @@ class TeacherDashboardScreen extends StatefulWidget {
 }
 
 class _TeacherDashboardScreenState extends State<TeacherDashboardScreen> {
+  static const _months = [
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December',
+  ];
+
   int _selectedNavigationIndex = 0;
-  bool _isLoading = true;
+  bool _isLoadingFilters = true;
+  bool _isLoadingStudents = false;
   String _error = '';
-  List<Map<String, dynamic>> _classes = [];
+  String _studentsError = '';
+
+  // [{course_code, course_name, year_levels: [..]}]
+  List<Map<String, dynamic>> _courses = [];
+  String? _course;
+  String? _yearLevel;
+  late DateTime _month = _firstOfThisMonth();
+  List<Map<String, dynamic>> _students = [];
+
+  static DateTime _firstOfThisMonth() {
+    final now = ManilaTime.now();
+    return DateTime(now.year, now.month);
+  }
 
   String get _displayName =>
       widget.fullName.trim().isNotEmpty ? widget.fullName.trim() : widget.email;
@@ -46,13 +76,26 @@ class _TeacherDashboardScreenState extends State<TeacherDashboardScreen> {
   String get _firstName =>
       SessionService.resolveFirstName(widget.firstName, widget.fullName);
 
+  String get _monthKey =>
+      '${_month.year.toString().padLeft(4, '0')}-'
+      '${_month.month.toString().padLeft(2, '0')}';
+
+  List<String> get _yearLevels {
+    final match = _courses.where((item) => item['course_code'] == _course);
+    if (match.isEmpty) return const [];
+    return [
+      for (final level in (match.first['year_levels'] as List<dynamic>? ?? []))
+        level.toString(),
+    ];
+  }
+
   @override
   void initState() {
     super.initState();
     _releaseKeyboard();
     ProfileState.instance.addListener(_onProfileChanged);
     ProfileState.instance.refresh(widget.token);
-    _loadClasses();
+    _loadFilters();
   }
 
   // Coming from the login or change password screen, the browser can keep the
@@ -75,58 +118,77 @@ class _TeacherDashboardScreenState extends State<TeacherDashboardScreen> {
     if (mounted) setState(() {});
   }
 
-  Future<void> _loadClasses() async {
+  Future<void> _loadFilters() async {
     setState(() {
-      _isLoading = true;
+      _isLoadingFilters = true;
       _error = '';
     });
     try {
-      final result = await ApiService.getMyClassSchedule(token: widget.token);
+      final result = await ApiService.getTeacherFilters(token: widget.token);
       if (!mounted) return;
+      final courses = [
+        for (final item in (result['courses'] as List<dynamic>? ?? []))
+          Map<String, dynamic>.from(item as Map),
+      ];
       setState(() {
-        _classes = _groupClasses(result['schedules'] as List<dynamic>? ?? []);
-        _isLoading = false;
+        _courses = courses;
+        _isLoadingFilters = false;
+        final stillThere = courses.any((c) => c['course_code'] == _course);
+        if (!stillThere) {
+          _course = courses.isEmpty
+              ? null
+              : courses.first['course_code']?.toString();
+          _yearLevel = null;
+        }
+        if (_course != null && !_yearLevels.contains(_yearLevel)) {
+          _yearLevel = _yearLevels.isEmpty ? null : _yearLevels.first;
+        }
       });
+      if (_course != null && _yearLevel != null) await _loadStudents();
     } catch (error) {
       if (!mounted) return;
       setState(() {
         _error = error.toString().replaceFirst('Exception: ', '');
-        _isLoading = false;
+        _isLoadingFilters = false;
       });
     }
   }
 
-  // The server returns one row per weekly meeting. Count a subject taught to
-  // one course / year / section as a single class, the same way the class
-  // schedule screen does.
-  List<Map<String, dynamic>> _groupClasses(List<dynamic> schedules) {
-    final groups = <String, Map<String, dynamic>>{};
-    for (final item in schedules) {
-      final meeting = Map<String, dynamic>.from(item as Map);
-      final key = [
-        meeting['course'],
-        meeting['year_level'],
-        meeting['section'],
-        meeting['subject'],
-      ].map((value) => (value?.toString() ?? '').trim().toUpperCase()).join('|');
-      groups.putIfAbsent(key, () => meeting);
+  Future<void> _loadStudents() async {
+    final course = _course;
+    final yearLevel = _yearLevel;
+    if (course == null || yearLevel == null) return;
+    setState(() {
+      _isLoadingStudents = true;
+      _studentsError = '';
+    });
+    try {
+      final result = await ApiService.getTeacherStudentsDtr(
+        token: widget.token,
+        course: course,
+        yearLevel: yearLevel,
+        month: _monthKey,
+      );
+      if (!mounted) return;
+      setState(() {
+        _students = [
+          for (final item in (result['students'] as List<dynamic>? ?? []))
+            Map<String, dynamic>.from(item as Map),
+        ];
+        _isLoadingStudents = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _studentsError = error.toString().replaceFirst('Exception: ', '');
+        _isLoadingStudents = false;
+      });
     }
-    return groups.values.toList();
   }
 
-  // How many different subjects the teacher handles, and how many groups.
-  int get _subjectCount =>
-      _classes.map((item) => item['subject']?.toString() ?? '').toSet().length;
-
-  void _openClasses() {
-    Navigator.push<void>(
-      context,
-      MaterialPageRoute(
-        builder: (context) => TeacherClassScheduleScreen(token: widget.token),
-      ),
-    ).then((_) {
-      if (mounted) setState(() => _selectedNavigationIndex = 0);
-    });
+  void _changeMonth(int delta) {
+    setState(() => _month = DateTime(_month.year, _month.month + delta));
+    _loadStudents();
   }
 
   void _openProfile() {
@@ -152,11 +214,7 @@ class _TeacherDashboardScreenState extends State<TeacherDashboardScreen> {
       return;
     }
     setState(() => _selectedNavigationIndex = index);
-    if (index == 1) {
-      _openClasses();
-    } else {
-      _openProfile();
-    }
+    _openProfile();
   }
 
   /// "Hello, Ana", the same greeting as the student and parent homes.
@@ -165,135 +223,156 @@ class _TeacherDashboardScreenState extends State<TeacherDashboardScreen> {
     return 'Hello, $name';
   }
 
-  Widget _statTile(
-    ThemeData theme, {
-    required IconData icon,
-    required int? value,
-    required String label,
-    VoidCallback? onTap,
-  }) {
-    return Expanded(
-      child: Hoverable(
-        onTap: onTap,
-        builder: (context, hovered) => AppPanel(
-          hovered: hovered,
-          padding: const EdgeInsets.all(AppSpace.md),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                width: 32,
-                height: 32,
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.primary.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(AppRadius.block),
-                ),
-                child: Icon(icon, size: 18, color: theme.colorScheme.primary),
-              ),
-              const SizedBox(height: AppSpace.sm),
-              value == null
-                  ? Text(
-                      '—',
-                      style: theme.textTheme.headlineSmall?.copyWith(
-                        fontWeight: FontWeight.w800,
-                        height: 1,
-                      ),
-                    )
-                  : CountUp(
-                      value: value,
-                      style: theme.textTheme.headlineSmall?.copyWith(
-                        fontWeight: FontWeight.w800,
-                        height: 1,
-                        letterSpacing: -0.5,
-                      ),
-                    ),
-              const SizedBox(height: AppSpace.xs),
-              Text(
-                label,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
+  Widget _filters(ThemeData theme) {
+    return AppPanel(
+      padding: const EdgeInsets.all(AppSpace.lg),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SectionHeading(
+            title: 'Student attendance',
+            subtitle:
+                'Choose a course and a year level to read the daily time '
+                'record of its students.',
           ),
-        ),
-      ),
-    );
-  }
-
-  /// One class: the subject, and the course and year it is taught to.
-  Widget _classRow(ThemeData theme, Map<String, dynamic> item) {
-    final year = item['year_level']?.toString().trim() ?? '';
-    final group = [
-      item['course']?.toString().trim() ?? '',
-      if (year.isNotEmpty) 'Year $year',
-    ].where((value) => value.isNotEmpty).join('  ·  ');
-
-    return Padding(
-      padding: const EdgeInsets.only(bottom: AppSpace.sm),
-      child: Hoverable(
-        onTap: _openClasses,
-        builder: (context, hovered) => AnimatedContainer(
-          duration: const Duration(milliseconds: 160),
-          padding: const EdgeInsets.all(AppSpace.md),
-          decoration: BoxDecoration(
-            color: hovered
-                ? theme.colorScheme.primary.withValues(alpha: 0.06)
-                : theme.colorScheme.surfaceContainerHighest.withValues(
-                    alpha: 0.4,
-                  ),
-            borderRadius: BorderRadius.circular(AppRadius.block),
-          ),
-          child: Row(
+          const SizedBox(height: AppSpace.md),
+          Row(
             children: [
-              Container(
-                width: 36,
-                height: 36,
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.primary.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(AppRadius.block),
-                ),
-                child: Icon(
-                  Icons.menu_book_outlined,
-                  size: 18,
-                  color: theme.colorScheme.primary,
+              Expanded(
+                child: DropdownButtonFormField<String>(
+                  key: ValueKey('course-$_course'),
+                  initialValue: _course,
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: 'Course'),
+                  items: [
+                    for (final course in _courses)
+                      DropdownMenuItem<String>(
+                        value: course['course_code']?.toString(),
+                        child: Text(
+                          course['course_code']?.toString() ?? '',
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                  ],
+                  onChanged: (value) {
+                    setState(() {
+                      _course = value;
+                      _yearLevel = _yearLevels.isEmpty
+                          ? null
+                          : _yearLevels.first;
+                    });
+                    _loadStudents();
+                  },
                 ),
               ),
               const SizedBox(width: AppSpace.md),
               Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      item['subject']?.toString() ?? 'Class',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    if (group.isNotEmpty)
-                      Text(
-                        group,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
-                        ),
+                child: DropdownButtonFormField<String>(
+                  key: ValueKey('year-$_course-$_yearLevel'),
+                  initialValue: _yearLevel,
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: 'Year level'),
+                  items: [
+                    for (final level in _yearLevels)
+                      DropdownMenuItem<String>(
+                        value: level,
+                        child: Text('Year $level'),
                       ),
                   ],
+                  onChanged: (value) {
+                    setState(() => _yearLevel = value);
+                    _loadStudents();
+                  },
                 ),
               ),
-              AnimatedSlide(
-                duration: const Duration(milliseconds: 160),
-                offset: Offset(hovered ? 0.25 : 0, 0),
-                child: Icon(
-                  Icons.arrow_forward_rounded,
-                  size: 18,
-                  color: theme.colorScheme.primary,
+            ],
+          ),
+          const SizedBox(height: AppSpace.md),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              IconButton(
+                tooltip: 'Previous month',
+                icon: const Icon(Icons.chevron_left_rounded),
+                onPressed: _isLoadingStudents ? null : () => _changeMonth(-1),
+              ),
+              Text(
+                '${_months[_month.month - 1]} ${_month.year}',
+                style: theme.textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w800,
                 ),
               ),
+              IconButton(
+                tooltip: 'Next month',
+                icon: const Icon(Icons.chevron_right_rounded),
+                onPressed: _isLoadingStudents ? null : () => _changeMonth(1),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _studentPanel(ThemeData theme, Map<String, dynamic> student) {
+    final days = [
+      for (final item in (student['days'] as List<dynamic>? ?? []))
+        DtrDay.fromJson(Map<String, dynamic>.from(item as Map)),
+    ].reversed.toList();
+    final onCampus = (student['days_on_campus'] as num?)?.toInt() ?? 0;
+    final minutes = (student['total_minutes'] as num?)?.toInt() ?? 0;
+    final number = student['student_number']?.toString() ?? '';
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: AppSpace.sm),
+      child: AppPanel(
+        padding: EdgeInsets.zero,
+        child: Theme(
+          data: theme.copyWith(dividerColor: Colors.transparent),
+          child: ExpansionTile(
+            tilePadding: const EdgeInsets.symmetric(
+              horizontal: AppSpace.md,
+              vertical: AppSpace.xs,
+            ),
+            childrenPadding: const EdgeInsets.fromLTRB(
+              AppSpace.md,
+              0,
+              AppSpace.md,
+              AppSpace.md,
+            ),
+            title: Text(
+              student['name']?.toString() ?? 'Student',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            subtitle: Text(
+              [
+                if (number.isNotEmpty) number,
+                '$onCampus ${onCampus == 1 ? 'day' : 'days'}',
+                formatDuration(minutes),
+              ].join('  ·  '),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+            children: [
+              if (days.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: AppSpace.sm),
+                  child: Text(
+                    'No attendance this month.',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                )
+              else
+                DtrTable(days: days),
             ],
           ),
         ),
@@ -301,69 +380,70 @@ class _TeacherDashboardScreenState extends State<TeacherDashboardScreen> {
     );
   }
 
-  Widget _classesCard(ThemeData theme) {
-    if (_isLoading) {
+  Widget _studentsSection(ThemeData theme) {
+    if (_isLoadingFilters) {
       return const AppPanel(
         padding: EdgeInsets.all(28),
         child: Center(child: CircularProgressIndicator()),
       );
     }
-
     if (_error.isNotEmpty) {
       return AppPanel(
         child: Row(
           children: [
             Icon(Icons.cloud_off_outlined, color: theme.colorScheme.primary),
             const SizedBox(width: AppSpace.md),
-            const Expanded(child: Text('Could not load your classes.')),
-            TextButton(onPressed: _loadClasses, child: const Text('Retry')),
+            const Expanded(child: Text('Could not load the course list.')),
+            TextButton(onPressed: _loadFilters, child: const Text('Retry')),
           ],
         ),
       );
     }
-
-    if (_classes.isEmpty) {
+    if (_courses.isEmpty) {
       return const AppPanel(
         padding: EdgeInsets.symmetric(vertical: AppSpace.lg),
         child: EmptyState(
-          icon: Icons.menu_book_outlined,
-          title: 'No classes assigned',
+          icon: Icons.groups_outlined,
+          title: 'No students yet',
           message:
-              'The classes you teach this term will show up here once the '
-              'administrator assigns them.',
+              'The students will show up here once the administrator imports '
+              'the masterlist.',
         ),
       );
     }
-
-    return AppPanel(
-      padding: const EdgeInsets.all(AppSpace.xl),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SectionHeading(
-            title: 'Your classes',
-            subtitle:
-                'Open a class to see which students are on campus and their '
-                'attendance for the day, week or month.',
-            trailing: TextButton(
-              onPressed: _openClasses,
-              child: const Text('Open all'),
-            ),
-          ),
-          const SizedBox(height: AppSpace.lg),
-          ..._classes.take(4).map((item) => _classRow(theme, item)),
-          if (_classes.length > 4)
-            Padding(
-              padding: const EdgeInsets.only(top: AppSpace.xs),
-              child: Text(
-                'and ${_classes.length - 4} more',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
-            ),
-        ],
-      ),
+    if (_isLoadingStudents) {
+      return const AppPanel(
+        padding: EdgeInsets.all(28),
+        child: Center(child: CircularProgressIndicator()),
+      );
+    }
+    if (_studentsError.isNotEmpty) {
+      return AppPanel(
+        child: Row(
+          children: [
+            Icon(Icons.cloud_off_outlined, color: theme.colorScheme.primary),
+            const SizedBox(width: AppSpace.md),
+            Expanded(child: Text(_studentsError)),
+            TextButton(onPressed: _loadStudents, child: const Text('Retry')),
+          ],
+        ),
+      );
+    }
+    if (_students.isEmpty) {
+      return const AppPanel(
+        padding: EdgeInsets.symmetric(vertical: AppSpace.lg),
+        child: EmptyState(
+          icon: Icons.groups_outlined,
+          title: 'No students found',
+          message: 'There are no students in this course and year level.',
+        ),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        for (final student in _students) _studentPanel(theme, student),
+      ],
     );
   }
 
@@ -378,12 +458,12 @@ class _TeacherDashboardScreenState extends State<TeacherDashboardScreen> {
           IconButton(
             icon: const Icon(Icons.refresh_rounded),
             tooltip: 'Refresh',
-            onPressed: _isLoading ? null : _loadClasses,
+            onPressed: _isLoadingFilters ? null : _loadFilters,
           ),
         ],
       ),
       body: RefreshIndicator(
-        onRefresh: _loadClasses,
+        onRefresh: _loadFilters,
         child: LayoutBuilder(
           builder: (context, constraints) {
             final padding = constraints.maxWidth < 400
@@ -401,7 +481,7 @@ class _TeacherDashboardScreenState extends State<TeacherDashboardScreen> {
                   order: 0,
                   child: BrandBand(
                     greeting: _greeting,
-                    subtitle: 'Your classes and students today',
+                    subtitle: 'The daily time record of your students',
                     name: _displayName,
                     photo: ProfileState.instance.photo,
                   ),
@@ -414,51 +494,18 @@ class _TeacherDashboardScreenState extends State<TeacherDashboardScreen> {
                     padding,
                   ),
                   child: Center(
-                  child: SizedBox(
-                    width: width,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Reveal(
-                          order: 1,
-                          child: Row(
-                            children: [
-                              _statTile(
-                                theme,
-                                icon: Icons.menu_book_outlined,
-                                value: _isLoading ? null : _subjectCount,
-                                label: _subjectCount == 1
-                                    ? 'Subject'
-                                    : 'Subjects',
-                                onTap: _openClasses,
-                              ),
-                              const SizedBox(width: AppSpace.sm),
-                              _statTile(
-                                theme,
-                                icon: Icons.groups_outlined,
-                                value: _isLoading ? null : _classes.length,
-                                label: _classes.length == 1
-                                    ? 'Class'
-                                    : 'Classes',
-                                onTap: _openClasses,
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(height: AppSpace.md),
-                        Reveal(
-                          order: 2,
-                          child: DailyScheduleCard(
-                            token: widget.token,
-                            isTeacher: true,
-                          ),
-                        ),
-                        const SizedBox(height: AppSpace.md),
-                        Reveal(order: 3, child: _classesCard(theme)),
-                      ],
+                    child: SizedBox(
+                      width: width,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Reveal(order: 1, child: _filters(theme)),
+                          const SizedBox(height: AppSpace.md),
+                          Reveal(order: 2, child: _studentsSection(theme)),
+                        ],
+                      ),
                     ),
                   ),
-                ),
                 ),
               ],
             );
@@ -473,10 +520,6 @@ class _TeacherDashboardScreenState extends State<TeacherDashboardScreen> {
             icon: Icon(Icons.home_outlined),
             selectedIcon: Icon(Icons.home_rounded),
             label: 'Home',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.fact_check_outlined),
-            label: 'Classes',
           ),
           NavigationDestination(
             icon: Icon(Icons.person_outline_rounded),

@@ -1,5 +1,4 @@
 const express = require('express');
-const multer = require('multer');
 const authenticateToken = require('../middleware/authMiddleware');
 const {
   getCourses,
@@ -9,22 +8,12 @@ const {
   getDepartments,
   addDepartment,
   updateDepartment,
-  deleteDepartment,
-  getClassSchedules,
-  getAcademicTerms,
-  createAcademicTerm,
-  updateAcademicTerm,
-  updateClassSchedule,
-  deleteClassSchedule,
-  archiveCourseTermSchedules,
-  importClassSchedules
+  deleteDepartment
 } = require('../controllers/classScheduleController');
 
+// Only courses and departments are managed here now. Class schedules and the
+// timetable upload were removed from the system.
 const router = express.Router();
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024, files: 1 }
-});
 
 const requireAdmin = (req, res, next) => {
   if (req.user.role?.toLowerCase() !== 'admin') {
@@ -35,23 +24,7 @@ const requireAdmin = (req, res, next) => {
   return next();
 };
 
-const handleScheduleFile = (req, res, next) => {
-  upload.single('schedule')(req, res, (error) => {
-    if (error) {
-      return res.status(400).json({
-        message: error.code === 'LIMIT_FILE_SIZE'
-          ? 'Schedule file must be 5 MB or smaller.'
-          : 'Could not process the uploaded schedule file.'
-      });
-    }
-    return next();
-  });
-};
-
 router.use(authenticateToken, requireAdmin);
-router.get('/terms', getAcademicTerms);
-router.post('/terms', createAcademicTerm);
-router.put('/terms/:termId', updateAcademicTerm);
 router.get('/departments', getDepartments);
 router.post('/departments', addDepartment);
 router.put('/departments/:departmentId', updateDepartment);
@@ -60,12 +33,5 @@ router.get('/courses', getCourses);
 router.post('/courses', addCourse);
 router.put('/courses/:courseCode', updateCourse);
 router.delete('/courses/:courseCode', deleteCourse);
-router.get('/', getClassSchedules);
-router.get('/:courseCode/schedules', getClassSchedules);
-router.post('/:courseCode/archive', archiveCourseTermSchedules);
-router.put('/:scheduleId', updateClassSchedule);
-router.delete('/:scheduleId', deleteClassSchedule);
-router.post('/import', handleScheduleFile, importClassSchedules);
-router.post('/:courseCode/import', handleScheduleFile, importClassSchedules);
 
 module.exports = router;

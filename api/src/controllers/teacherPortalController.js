@@ -1,306 +1,159 @@
 const pool = require('../config/database');
+const { buildDtrDays } = require('../services/dtr');
 
-const PERIODS = ['daily', 'weekly', 'monthly'];
-const DAY_MS = 24 * 60 * 60 * 1000;
+// The teacher's view is read only: the daily time record (DTR) of the students
+// of one course and year level, one month at a time. Teachers have no class
+// schedule in the system any more, so the list of students comes from the
+// course and year level of the students themselves.
 
-// ---------------------------------------------------------------------------
-// Date / time helpers. Dates are handled as 'YYYY-MM-DD' strings and times as
-// 'HH:MM:SS' strings in Philippine time, which is how attendance is stored.
-// ---------------------------------------------------------------------------
+const manilaText = (column) =>
+  `to_char(${column}, 'YYYY-MM-DD"T"HH24:MI:SS')`;
 
-const manilaToday = () =>
+const MONTH_PATTERN = /^(\d{4})-(0[1-9]|1[0-2])$/;
+
+const currentMonth = () =>
   new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Manila',
     year: 'numeric',
-    month: '2-digit',
-    day: '2-digit'
+    month: '2-digit'
   }).format(new Date());
 
-const manilaNowTime = () =>
-  new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Asia/Manila',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hourCycle: 'h23'
-  }).format(new Date());
-
-const parseDate = (text) => {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return null;
-  const date = new Date(`${text}T00:00:00Z`);
-  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== text) {
-    return null;
-  }
-  return date;
+// "2026-11" -> { start: '2026-11-01', end: '2026-12-01' }
+const monthRange = (month) => {
+  const match = MONTH_PATTERN.exec(month);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const index = Number(match[2]);
+  const pad = (value) => String(value).padStart(2, '0');
+  const nextYear = index === 12 ? year + 1 : year;
+  const nextMonth = index === 12 ? 1 : index + 1;
+  return {
+    start: `${year}-${pad(index)}-01`,
+    end: `${nextYear}-${pad(nextMonth)}-01`
+  };
 };
 
-const formatDate = (date) => date.toISOString().slice(0, 10);
-const addDays = (date, days) => new Date(date.getTime() + days * DAY_MS);
-
-// daily = that day, weekly = Monday to Sunday, monthly = whole calendar month.
-const getRange = (period, anchor) => {
-  if (period === 'daily') return [anchor, anchor];
-  if (period === 'weekly') {
-    const daysSinceMonday = (anchor.getUTCDay() + 6) % 7;
-    const monday = addDays(anchor, -daysSinceMonday);
-    return [monday, addDays(monday, 6)];
+const requireTeacher = (req, res) => {
+  if (req.user.role?.toLowerCase() !== 'teacher') {
+    res.status(403).json({ message: 'This report is available to teachers only.' });
+    return false;
   }
-  const year = anchor.getUTCFullYear();
-  const month = anchor.getUTCMonth();
-  return [
-    new Date(Date.UTC(year, month, 1)),
-    new Date(Date.UTC(year, month + 1, 0))
-  ];
+  return true;
 };
 
-// ---------------------------------------------------------------------------
-// Status of one student for one class meeting.
-//
-// A check-in session "covers" the class if the student arrived before the class
-// ended and had not already checked out before it started. The covering session
-// that started first decides the result: present if the student arrived by the
-// class's late cutoff, otherwise late. No covering session means absent, unless
-// the class has not finished yet (upcoming / pending).
-// ---------------------------------------------------------------------------
-const classifyMeeting = ({ meeting, date, sessions, today, nowTime }) => {
-  const lateAfter = meeting.late_after || meeting.start_time;
-  const covering = sessions.filter(
-    (session) =>
-      session.time_in < meeting.end_time &&
-      (!session.time_out || session.time_out > meeting.start_time)
-  );
+const fullName = (row) =>
+  [row.first_name, row.middle_name, row.last_name]
+    .map((part) => String(part ?? '').trim())
+    .filter(Boolean)
+    .join(' ');
 
-  if (covering.length > 0) {
-    const first = covering[0]; // sessions arrive ordered by time_in
-    return {
-      status: first.time_in > lateAfter ? 'late' : 'present',
-      time_in: first.time_in,
-      time_out: first.time_out
-    };
-  }
-
-  const none = { time_in: null, time_out: null };
-  if (date > today) return { status: 'upcoming', ...none };
-  if (date === today && nowTime < meeting.end_time) {
-    return {
-      status: nowTime < meeting.start_time ? 'upcoming' : 'pending',
-      ...none
-    };
-  }
-  return { status: 'absent', ...none };
-};
-
-// GET /api/teacher/class-attendance?schedule_id=...&period=daily|weekly|monthly&date=YYYY-MM-DD
-// Attendance of every student in one of the logged-in teacher's classes.
-const getClassAttendance = async (req, res) => {
+// GET /api/teacher/filters
+// The courses and year levels that have students, to fill the two pickers.
+const getStudentFilters = async (req, res) => {
   try {
-    if (req.user.role?.toLowerCase() !== 'teacher') {
-      return res.status(403).json({
-        message: 'The class attendance portal is available to teachers only.'
-      });
-    }
-
-    const scheduleId = String(req.query.schedule_id ?? '').trim();
-    if (!scheduleId) {
-      return res.status(400).json({ message: 'Choose a class first.' });
-    }
-
-    const period = String(req.query.period ?? 'weekly').trim().toLowerCase();
-    if (!PERIODS.includes(period)) {
-      return res.status(400).json({
-        message: 'Period must be daily, weekly, or monthly.'
-      });
-    }
-
-    const today = manilaToday();
-    const anchor = parseDate(String(req.query.date ?? today).trim());
-    if (!anchor) {
-      return res.status(400).json({
-        message: 'Date must be in YYYY-MM-DD format.'
-      });
-    }
-    const [rangeStart, rangeEnd] = getRange(period, anchor);
-    const startDate = formatDate(rangeStart);
-    const endDate = formatDate(rangeEnd);
-
-    // 1. The selected schedule row must belong to this teacher.
-    const selected = await pool.query(
+    if (!requireTeacher(req, res)) return;
+    const result = await pool.query(
       `
-      SELECT cs.id, cs.course, cs.year_level, cs.section, cs.subject,
-             cs.academic_term_id
-      FROM class_schedules cs
-      WHERE cs.id = $1 AND cs.teacher_user_id = $2 AND NOT cs.is_archived
-      `,
-      [scheduleId, req.user.userId]
-    );
-    if (selected.rowCount === 0) {
-      return res.status(404).json({ message: 'Class not found.' });
-    }
-    const cls = selected.rows[0];
-
-    // 2. Every weekly meeting of that class (same course, year, subject).
-    //    Sections are not used: a class belongs to a course and a year level.
-    const meetingsResult = await pool.query(
-      `
-      SELECT cs.id, cs.weekday, cs.start_time, cs.late_after, cs.end_time
-      FROM class_schedules cs
-      WHERE cs.teacher_user_id = $1
-        AND cs.academic_term_id = $2
-        AND NOT cs.is_archived
-        AND UPPER(BTRIM(cs.course)) = UPPER(BTRIM($3))
-        AND UPPER(BTRIM(cs.year_level)) = UPPER(BTRIM($4))
-        AND UPPER(BTRIM(cs.subject)) = UPPER(BTRIM($5))
-      ORDER BY cs.weekday, cs.start_time
-      `,
-      [
-        req.user.userId,
-        cls.academic_term_id,
-        cls.course,
-        cls.year_level,
-        cls.subject
-      ]
-    );
-    const meetings = meetingsResult.rows;
-
-    // 3. The class dates inside the chosen range.
-    const classSessions = [];
-    for (
-      let day = rangeStart;
-      day.getTime() <= rangeEnd.getTime();
-      day = addDays(day, 1)
-    ) {
-      for (const meeting of meetings) {
-        if (meeting.weekday === day.getUTCDay()) {
-          classSessions.push({
-            date: formatDate(day),
-            weekday: meeting.weekday,
-            start_time: meeting.start_time,
-            late_after: meeting.late_after,
-            end_time: meeting.end_time
-          });
-        }
-      }
-    }
-
-    // 4. Students of the class: everyone in that course and year level.
-    const studentsResult = await pool.query(
-      `
-      SELECT s.id, s.user_id, s.student_number,
-             s.first_name, s.middle_name, s.last_name
+      SELECT
+        UPPER(BTRIM(s.course)) AS course_code,
+        MAX(c.course_name) AS course_name,
+        BTRIM(s.year_level) AS year_level
       FROM students s
-      WHERE UPPER(BTRIM(s.course)) = UPPER(BTRIM($1))
-        AND UPPER(BTRIM(s.year_level)) = UPPER(BTRIM($2))
-      ORDER BY s.last_name, s.first_name
-      `,
-      [cls.course, cls.year_level]
+      LEFT JOIN courses c ON UPPER(c.course_code) = UPPER(BTRIM(s.course))
+      WHERE s.course IS NOT NULL AND BTRIM(s.course) <> ''
+        AND s.year_level IS NOT NULL AND BTRIM(s.year_level) <> ''
+      GROUP BY UPPER(BTRIM(s.course)), BTRIM(s.year_level)
+      ORDER BY UPPER(BTRIM(s.course)), BTRIM(s.year_level)
+      `
     );
-    const students = studentsResult.rows;
 
-    // 5. Their check-in sessions inside the range (Philippine local times).
-    const sessionsByStudent = new Map();
-    const userIds = students.map((student) => student.user_id).filter(Boolean);
-    if (userIds.length > 0 && classSessions.length > 0) {
-      const attendanceResult = await pool.query(
-        `
-        SELECT
-          a.user_id,
-          a.attendance_date::text AS date,
-          to_char(a.time_in, 'HH24:MI:SS') AS time_in,
-          to_char(a.time_out, 'HH24:MI:SS') AS time_out
-        FROM attendance a
-        WHERE a.user_id = ANY($1::uuid[])
-          AND a.attendance_date BETWEEN $2::date AND $3::date
-          AND a.time_in IS NOT NULL
-          AND LOWER(COALESCE(a.status, '')) <> 'absent'
-        ORDER BY a.user_id, a.attendance_date, a.time_in
-        `,
-        [userIds, startDate, endDate]
-      );
-      for (const row of attendanceResult.rows) {
-        if (!sessionsByStudent.has(row.user_id)) {
-          sessionsByStudent.set(row.user_id, new Map());
-        }
-        const byDate = sessionsByStudent.get(row.user_id);
-        if (!byDate.has(row.date)) byDate.set(row.date, []);
-        byDate.get(row.date).push({
-          time_in: row.time_in,
-          time_out: row.time_out
+    const courses = new Map();
+    for (const row of result.rows) {
+      if (!courses.has(row.course_code)) {
+        courses.set(row.course_code, {
+          course_code: row.course_code,
+          course_name: row.course_name ?? row.course_code,
+          year_levels: []
         });
       }
+      courses.get(row.course_code).year_levels.push(row.year_level);
+    }
+    return res.json({ courses: [...courses.values()] });
+  } catch (error) {
+    console.error('Teacher filters error:', error);
+    return res.status(500).json({ message: 'Could not load the course list.' });
+  }
+};
+
+// GET /api/teacher/students-dtr?course=BSIT&year_level=3&month=2026-11
+const getStudentsDtr = async (req, res) => {
+  try {
+    if (!requireTeacher(req, res)) return;
+
+    const course = String(req.query.course ?? '').trim();
+    const yearLevel = String(req.query.year_level ?? '').trim();
+    const month = String(req.query.month ?? currentMonth()).trim();
+    if (!course || !yearLevel) {
+      return res.status(400).json({ message: 'Choose a course and a year level.' });
+    }
+    const range = monthRange(month);
+    if (!range) {
+      return res.status(400).json({ message: 'The month must look like 2026-11.' });
     }
 
-    // 6. Work out every student's status for every class meeting.
-    const nowTime = manilaNowTime();
-    const totals = { present: 0, late: 0, absent: 0 };
-    const studentRows = students.map((student) => {
-      const byDate = sessionsByStudent.get(student.user_id) ?? new Map();
-      const summary = { present: 0, late: 0, absent: 0 };
-      const attendance = classSessions.map((session) => {
-        const result = classifyMeeting({
-          meeting: session,
-          date: session.date,
-          sessions: byDate.get(session.date) ?? [],
-          today,
-          nowTime
-        });
-        if (summary[result.status] !== undefined) {
-          summary[result.status] += 1;
-          totals[result.status] += 1;
-        }
-        return {
-          date: session.date,
-          start_time: session.start_time,
-          end_time: session.end_time,
-          ...result
-        };
-      });
+    const result = await pool.query(
+      `
+      SELECT
+        s.user_id,
+        s.student_number,
+        s.first_name,
+        s.middle_name,
+        s.last_name,
+        a.attendance_date::text AS date_key,
+        ${manilaText('a.time_in')} AS time_in_text,
+        ${manilaText('a.time_out')} AS time_out_text,
+        a.status
+      FROM students s
+      LEFT JOIN attendance a
+        ON a.user_id = s.user_id
+        AND a.time_in IS NOT NULL
+        AND a.attendance_date >= $3::date
+        AND a.attendance_date < $4::date
+      WHERE UPPER(BTRIM(s.course)) = UPPER($1)
+        AND UPPER(BTRIM(s.year_level)) = UPPER($2)
+      ORDER BY s.last_name, s.first_name, s.user_id, a.time_in
+      `,
+      [course, yearLevel, range.start, range.end]
+    );
 
-      const initial = student.middle_name
-        ? ` ${String(student.middle_name).trim().charAt(0)}.`
-        : '';
+    const students = new Map();
+    for (const row of result.rows) {
+      if (!students.has(row.user_id)) {
+        students.set(row.user_id, {
+          user_id: row.user_id,
+          student_number: row.student_number,
+          name: fullName(row),
+          records: []
+        });
+      }
+      if (row.date_key) students.get(row.user_id).records.push(row);
+    }
+
+    const list = [...students.values()].map(({ records, ...student }) => {
+      const days = buildDtrDays(records);
       return {
-        student_id: student.id,
-        student_number: student.student_number,
-        name: `${student.last_name}, ${student.first_name}${initial}`,
-        summary,
-        attendance
+        ...student,
+        days,
+        days_on_campus: days.filter((day) => !day.absent).length,
+        total_minutes: days.reduce((sum, day) => sum + day.minutes, 0)
       };
     });
 
-    return res.json({
-      class: {
-        schedule_id: cls.id,
-        subject: cls.subject,
-        course: cls.course,
-        year_level: cls.year_level,
-        section: cls.section,
-        meetings: meetings.map((meeting) => ({
-          id: meeting.id,
-          weekday: meeting.weekday,
-          start_time: meeting.start_time,
-          late_after: meeting.late_after,
-          end_time: meeting.end_time
-        }))
-      },
-      period,
-      start_date: startDate,
-      end_date: endDate,
-      today,
-      sessions: classSessions,
-      totals,
-      students: studentRows
-    });
+    return res.json({ course: course.toUpperCase(), year_level: yearLevel, month, students: list });
   } catch (error) {
-    console.error('Get class attendance error:', error);
-    if (error.code === '22P02') {
-      return res.status(400).json({ message: 'The class ID is invalid.' });
-    }
-    return res.status(500).json({
-      message: 'Could not load the class attendance.'
-    });
+    console.error('Teacher students DTR error:', error);
+    return res.status(500).json({ message: 'Could not load the student report.' });
   }
 };
 
-module.exports = {
-  getClassAttendance
-};
+module.exports = { getStudentFilters, getStudentsDtr };
