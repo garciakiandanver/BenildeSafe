@@ -125,10 +125,13 @@ const getTeachers = async (req, res) => {
         t.first_name,
         t.middle_name,
         t.last_name,
+        t.department_id,
+        d.department_name,
         u.email,
         u.status
       FROM teachers t
       JOIN users u ON u.id = t.user_id
+      LEFT JOIN departments d ON d.id = t.department_id
       ORDER BY t.last_name, t.first_name
       `
     );
@@ -347,16 +350,35 @@ const updateManagedUser = async (req, res) => {
           message: 'Employee number is required.'
         });
       }
+      // The department is changed only when the form sends it.
+      const sendsDepartment = Object.prototype.hasOwnProperty.call(
+        req.body,
+        'department_id'
+      );
+      let departmentId = null;
+      if (sendsDepartment) {
+        try {
+          departmentId = await checkDepartment(client, req.body.department_id);
+        } catch (problem) {
+          await client.query('ROLLBACK');
+          return res.status(problem.status ?? 500).json({ message: problem.message });
+        }
+        if (!departmentId) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ message: 'Choose the department of the teacher.' });
+        }
+      }
       profileUpdate = await client.query(
         `
         UPDATE teachers
         SET employee_number = $2, first_name = $3, middle_name = NULLIF($4, ''),
-            last_name = $5
+            last_name = $5,
+            department_id = CASE WHEN $6 THEN $7::uuid ELSE department_id END
         WHERE user_id = $1::uuid
         `,
         [
           userId, employeeNumber, normalizedFirstName, normalizedMiddleName,
-          normalizedLastName
+          normalizedLastName, sendsDepartment, departmentId
         ]
       );
     } else {
@@ -498,6 +520,21 @@ const describeEmailError = (error) => {
 const collapse = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
 
 // POST /api/admin/teachers
+// A teacher's department must be one that exists. Returns the id, or null when
+// it is empty; throws { status, message } when it is not a department.
+const checkDepartment = async (db, value) => {
+  const id = String(value ?? '').trim();
+  if (!id) return null;
+  if (!/^[0-9a-f-]{36}$/i.test(id)) {
+    throw { status: 400, message: 'Choose a valid department.' };
+  }
+  const found = await db.query('SELECT 1 FROM departments WHERE id = $1::uuid', [id]);
+  if (found.rowCount === 0) {
+    throw { status: 400, message: 'That department no longer exists.' };
+  }
+  return id;
+};
+
 const addTeacher = async (req, res) => {
   const email = collapse(req.body.email).toLowerCase();
   const firstName = collapse(req.body.first_name);
@@ -509,6 +546,18 @@ const addTeacher = async (req, res) => {
     return res.status(400).json({
       message: 'First name, last name, email and employee number are required.'
     });
+  }
+  // The teacher (the department head) sees only this department's students.
+  let departmentId;
+  try {
+    departmentId = await checkDepartment(pool, req.body.department_id);
+  } catch (problem) {
+    return res.status(problem.status ?? 500).json({ message: problem.message });
+  }
+  // Teacher accounts are given only to department heads, so every teacher
+  // has a department and sees only the students of its courses.
+  if (!departmentId) {
+    return res.status(400).json({ message: 'Choose the department of the teacher.' });
   }
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return res.status(400).json({ message: 'Enter a valid email address.' });
@@ -568,10 +617,12 @@ const addTeacher = async (req, res) => {
     );
     await client.query(
       `
-      INSERT INTO teachers (id, user_id, employee_number, first_name, middle_name, last_name)
-      VALUES (gen_random_uuid(), $1, $2, $3, NULLIF($4, ''), $5)
+      INSERT INTO teachers (
+        id, user_id, employee_number, first_name, middle_name, last_name, department_id
+      )
+      VALUES (gen_random_uuid(), $1, $2, $3, NULLIF($4, ''), $5, $6::uuid)
       `,
-      [userId, employeeNumber, firstName, middleName, lastName]
+      [userId, employeeNumber, firstName, middleName, lastName, departmentId]
     );
 
     await client.query('COMMIT');

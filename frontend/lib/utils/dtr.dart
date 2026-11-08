@@ -59,7 +59,19 @@ class DtrDay {
     required this.sessions,
   });
 
+  /// A date with no time in at all, so the DTR shows every day of the month.
+  const DtrDay.empty(this.date)
+    : firstIn = null,
+      lastOut = null,
+      minutes = 0,
+      absent = false,
+      stillInside = false,
+      sessions = const [];
+
   DateTime? get day => ManilaTime.parse(date);
+
+  /// True for a day that has at least one time in.
+  bool get hasRecord => sessions.isNotEmpty;
 
   /// True when an administrator corrected one of the day's records.
   bool get hasRemarks => sessions.any((session) => session.remarks.isNotEmpty);
@@ -165,4 +177,40 @@ String formatDuration(int minutes) {
   final rest = minutes % 60;
   if (hours == 0) return '$rest min';
   return '$hours h ${rest.toString().padLeft(2, '0')} min';
+}
+
+/// Every date from [from] to [to] (never past today), oldest first, using the
+/// day in [days] when there is one and an empty day otherwise, so the DTR reads
+/// like a full calendar. When [from] is null it starts on the first day of the
+/// month of the oldest day in [days]; with no days and no [from] nothing is
+/// added.
+List<DtrDay> fillCalendar(List<DtrDay> days, {DateTime? from, DateTime? to}) {
+  final byDate = {for (final day in days) day.date: day};
+  DateTime? start = from;
+  if (start == null) {
+    DateTime? oldest;
+    for (final day in days) {
+      final value = day.day;
+      if (value != null && (oldest == null || value.isBefore(oldest))) {
+        oldest = value;
+      }
+    }
+    if (oldest == null) return days;
+    start = DateTime(oldest.year, oldest.month, 1);
+  }
+  final now = ManilaTime.now();
+  final today = DateTime(now.year, now.month, now.day);
+  var end = to == null ? today : DateTime(to.year, to.month, to.day);
+  if (end.isAfter(today)) end = today;
+
+  final result = <DtrDay>[];
+  for (
+    var date = DateTime(start.year, start.month, start.day);
+    !date.isAfter(end);
+    date = DateTime(date.year, date.month, date.day + 1)
+  ) {
+    final key = _dateKey(date);
+    result.add(byDate[key] ?? DtrDay.empty(key));
+  }
+  return result;
 }

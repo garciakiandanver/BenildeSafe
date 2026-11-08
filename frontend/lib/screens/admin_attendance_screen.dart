@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import '../services/api_service.dart';
+import '../utils/dtr.dart';
 import '../utils/manila_time.dart';
 import '../widgets/app_ui.dart';
 import 'admin_student_report_screen.dart';
@@ -800,6 +801,102 @@ class _AdminAttendanceScreenState extends State<AdminAttendanceScreen> {
   }
 
   /// One time in, as a single line on a laptop and a short card on a phone.
+  // ── one row per student ──────────────────────────────────────────
+
+  /// A student who left and came back has several records on one day. The list
+  /// shows one row per student, like a DTR: the first time in, the last time
+  /// out (or "Still inside"), the number of visits and the minutes on campus.
+  /// The records themselves stay in '_visits' for the correction.
+  List<Map<String, dynamic>> _byStudent(List<dynamic> records) {
+    final groups = <String, List<Map<String, dynamic>>>{};
+    for (final item in records) {
+      final record = Map<String, dynamic>.from(item as Map);
+      final key = (record['user_id'] ?? record['id_number'] ?? record['id'])
+          .toString();
+      groups.putIfAbsent(key, () => []).add(record);
+    }
+    final rows = <Map<String, dynamic>>[];
+    for (final visits in groups.values) {
+      visits.sort(
+        (a, b) => (a['time_in'] ?? '').toString().compareTo(
+          (b['time_in'] ?? '').toString(),
+        ),
+      );
+      final last = visits.last;
+      final open = (last['time_out'] ?? '').toString().isEmpty;
+      var minutes = 0;
+      for (final visit in visits) {
+        final start = ManilaTime.parse(visit['time_in']);
+        final end = ManilaTime.parse(visit['time_out']) ??
+            (_isToday ? ManilaTime.now() : null);
+        if (start != null && end != null && end.isAfter(start)) {
+          minutes += end.difference(start).inMinutes;
+        }
+      }
+      final remarks = visits
+          .map((v) => (v['correction_remarks'] ?? '').toString().trim())
+          .where((r) => r.isNotEmpty)
+          .toList();
+      rows.add({
+        ...last,
+        'time_in': visits.first['time_in'],
+        'time_out': open ? null : last['time_out'],
+        'status': open && _status(last) != 'absent' ? 'present' : last['status'],
+        'correction_remarks': remarks.isEmpty ? null : remarks.last,
+        '_visits': visits,
+        '_minutes': minutes,
+      });
+    }
+    rows.sort(
+      (a, b) => (b['time_in'] ?? '').toString().compareTo(
+        (a['time_in'] ?? '').toString(),
+      ),
+    );
+    return rows;
+  }
+
+  /// One visit: correct it at once. Several: choose the visit first.
+  Future<void> _openRow(Map<String, dynamic> row) async {
+    final visits = (row['_visits'] as List?)?.cast<Map<String, dynamic>>() ??
+        [row];
+    if (visits.length == 1) {
+      _editRecord(visits.first);
+      return;
+    }
+    final chosen = await showModalBottomSheet<Map<String, dynamic>>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          children: [
+            Text(
+              '${row['full_name'] ?? 'Student'}: choose the visit to correct',
+              style: Theme.of(sheetContext).textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 8),
+            for (var i = 0; i < visits.length; i++)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: CircleAvatar(child: Text('${i + 1}')),
+                title: Text(
+                  '${_formatTime(visits[i]['time_in']?.toString())}  to  '
+                  '${_formatTime(visits[i]['time_out']?.toString()).isEmpty ? 'still inside' : _formatTime(visits[i]['time_out']?.toString())}',
+                ),
+                subtitle: Text(_statusLabel(_status(visits[i]))),
+                trailing: const Icon(Icons.edit_outlined),
+                onTap: () => Navigator.pop(sheetContext, visits[i]),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (chosen != null && mounted) _editRecord(chosen);
+  }
+
   Widget _row(dynamic record, int index, {required bool wide}) {
     final theme = Theme.of(context);
     final muted = theme.colorScheme.onSurfaceVariant;
@@ -868,6 +965,19 @@ class _AdminAttendanceScreenState extends State<AdminAttendanceScreen> {
           overflow: TextOverflow.ellipsis,
           style: theme.textTheme.bodySmall?.copyWith(color: muted),
         ),
+        if (((record['_visits'] as List?)?.length ?? 1) > 1 ||
+            (record['_minutes'] ?? 0) > 0)
+          Text(
+            [
+              if (((record['_visits'] as List?)?.length ?? 1) > 1)
+                '${(record['_visits'] as List).length} visits',
+              if ((record['_minutes'] ?? 0) > 0)
+                formatDuration(record['_minutes'] as int),
+            ].join(' · '),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.bodySmall?.copyWith(color: muted),
+          ),
         if (_photos.containsKey(record['user_id']?.toString()))
           InkWell(
             onTap: () => _showPhoto(record),
@@ -998,7 +1108,7 @@ class _AdminAttendanceScreenState extends State<AdminAttendanceScreen> {
       index: index,
       margin: const EdgeInsets.only(bottom: AppSpace.xs + 2),
       child: InkWell(
-        onTap: () => _editRecord(record),
+        onTap: () => _openRow(Map<String, dynamic>.from(record as Map)),
         child: Padding(
           padding: EdgeInsets.symmetric(
             horizontal: AppSpace.lg,
@@ -1063,12 +1173,7 @@ class _AdminAttendanceScreenState extends State<AdminAttendanceScreen> {
     final filtered = inCourse
         .where((r) => _matches(r, 'year_level', year, _anyYear))
         .toList();
-    final visible = filtered.where(_matchesSearch).toList()
-      ..sort(
-        (a, b) => (b['time_in'] ?? '').toString().compareTo(
-          (a['time_in'] ?? '').toString(),
-        ),
-      );
+    final visible = _byStudent(filtered.where(_matchesSearch).toList());
     final shown = visible.take(_shown).toList();
 
     final search = TextField(
@@ -1170,8 +1275,8 @@ class _AdminAttendanceScreenState extends State<AdminAttendanceScreen> {
           Padding(
             padding: const EdgeInsets.only(bottom: AppSpace.sm),
             child: Text(
-              '${visible.length} ${visible.length == 1 ? 'record' : 'records'}'
-              '  ·  tap one to correct it',
+              '${visible.length} ${visible.length == 1 ? 'student' : 'students'}'
+              '  ·  tap one to correct a record',
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
               ),

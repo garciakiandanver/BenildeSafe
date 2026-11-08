@@ -459,7 +459,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         value: _count('totalTeachers'),
         icon: Icons.person_outline,
         color: AppColors.accentGreen,
-        footer: const Text('View classes only'),
+        footer: const Text('Department heads, read only'),
         onTap: () => _openUsers(tab: 1),
       ),
       _statCard(

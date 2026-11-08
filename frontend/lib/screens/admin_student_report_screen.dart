@@ -317,6 +317,15 @@ class _AdminUserAttendanceReportScreenState
           );
           return result['attendance'] as List<dynamic>? ?? [];
         },
+        loadPhotoDates: () => ApiService.getAdminUserPhotoDates(
+          token: widget.token,
+          userId: widget.userId,
+        ),
+        loadPhoto: (date) => ApiService.getAdminPhoto(
+          token: widget.token,
+          userId: widget.userId,
+          date: date,
+        ),
       ),
     );
   }

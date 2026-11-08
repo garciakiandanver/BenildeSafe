@@ -22,8 +22,8 @@ const buildParentText = (type, childName, campusName, status) => {
   switch (type) {
     case 'attendance_check_in':
       return {
-        title: `${childName} checked in`,
-        message: `${childName} checked in at ${place}.`
+        title: `${childName} arrived at ${place}`,
+        message: `${childName} arrived at ${place}.`
       };
     case 'attendance_check_out':
       return {

@@ -836,6 +836,15 @@ const deleteDepartment = async (req, res) => {
         message: `This department still has ${courses.rows[0].total} course(s). Move or delete them first.`
       });
     }
+    const teachers = await pool.query(
+      'SELECT COUNT(*)::int AS total FROM teachers WHERE department_id = $1::uuid',
+      [req.params.departmentId]
+    );
+    if (teachers.rows[0].total > 0) {
+      return res.status(409).json({
+        message: 'A teacher is assigned to this department. Change the teacher\'s department first.'
+      });
+    }
     const result = await pool.query(
       'DELETE FROM departments WHERE id = $1::uuid',
       [req.params.departmentId]

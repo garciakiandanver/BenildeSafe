@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 
 import '../utils/dtr.dart';
@@ -30,6 +32,15 @@ class AttendanceHistoryView extends StatefulWidget {
   /// administrator's report uses it; the student and parent leave it empty.
   final String subtitle;
 
+  /// The dates ("2026-11-06") verified with a photo. Given only on the
+  /// student's own screen and the administrator's report; the parent's view
+  /// leaves it out, so the parent does not see the photos.
+  final Future<Set<String>> Function()? loadPhotoDates;
+
+  /// Loads one verification photo: { photo: data URL or null, captured_at,
+  /// campus_name }.
+  final Future<Map<String, dynamic>> Function(String date)? loadPhoto;
+
   const AttendanceHistoryView({
     super.key,
     required this.load,
@@ -37,6 +48,8 @@ class AttendanceHistoryView extends StatefulWidget {
     this.photo,
     this.forParent = false,
     this.subtitle = '',
+    this.loadPhotoDates,
+    this.loadPhoto,
   });
 
   @override
@@ -74,16 +87,27 @@ class _AttendanceHistoryViewState extends State<AttendanceHistoryView> {
   static const int _pageSize = 30;
   int _shown = _pageSize;
 
+  Set<String> _photoDates = {};
+
   List<Map<String, dynamic>> get _visible => _attendance
       .where(
         (record) => _filter.matches(ManilaTime.parse(record['attendance_date'])),
       )
       .toList();
 
-  /// One entry per day, oldest first. Two visits on one date are one day.
-  List<DtrDay> get _visibleDays => buildDtrDays(_visible);
+  /// One entry per day, oldest first. Two visits on one date are one day, and
+  /// a date with no time in is still listed, so each month is a full calendar.
+  List<DtrDay> get _visibleDays {
+    final range = _filter.range;
+    return fillCalendar(
+      buildDtrDays(_visible),
+      from: range?.start,
+      to: range?.end,
+    );
+  }
 
-  int get _visibleDayCount => _visibleDays.length;
+  int get _visibleDayCount =>
+      _visibleDays.where((day) => day.hasRecord).length;
 
   @override
   void initState() {
@@ -106,6 +130,7 @@ class _AttendanceHistoryViewState extends State<AttendanceHistoryView> {
         _shown = _pageSize;
         _isLoading = false;
       });
+      _loadPhotoDates();
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -115,13 +140,88 @@ class _AttendanceHistoryViewState extends State<AttendanceHistoryView> {
     }
   }
 
+  // Optional: the history still shows if the photo list cannot be read.
+  Future<void> _loadPhotoDates() async {
+    final loader = widget.loadPhotoDates;
+    if (loader == null) return;
+    try {
+      final dates = await loader();
+      if (mounted) setState(() => _photoDates = dates);
+    } catch (_) {}
+  }
+
+  void _openPhoto(String date) {
+    final loader = widget.loadPhoto;
+    if (loader == null) return;
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Verification photo'),
+        content: FutureBuilder<Map<String, dynamic>>(
+          future: loader(date),
+          builder: (context, snapshot) {
+            if (snapshot.connectionState != ConnectionState.done) {
+              return const SizedBox(
+                height: 120,
+                child: Center(child: CircularProgressIndicator()),
+              );
+            }
+            if (snapshot.hasError) {
+              return Text(
+                snapshot.error.toString().replaceFirst('Exception: ', ''),
+              );
+            }
+            final data = snapshot.data ?? {};
+            final photo = data['photo']?.toString();
+            final when = ManilaTime.time(data['captured_at'], fallback: '');
+            final where = data['campus_name']?.toString() ?? '';
+            return SizedBox(
+              width: 360,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (photo != null && photo.contains(','))
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Image.memory(
+                        base64Decode(photo.split(',').last),
+                        fit: BoxFit.contain,
+                      ),
+                    )
+                  else
+                    const Text(
+                      'The image was removed after 30 days. The day stays verified.',
+                    ),
+                  const SizedBox(height: 8),
+                  Text(
+                    [
+                      if (when.isNotEmpty) 'Taken $when',
+                      if (where.isNotEmpty) 'at $where',
+                    ].join(' '),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
   // ------------------------------------------------------------------ parts
 
   Widget _summary() {
     final theme = Theme.of(context);
     final days = _visibleDays;
     final absent = days.where((day) => day.absent).length;
-    final onCampus = days.length - absent;
+    final onCampus = days.where((day) => day.hasRecord && !day.absent).length;
     final totalMinutes = days.fold<int>(0, (sum, day) => sum + day.minutes);
 
     Widget tile(String label, Widget value, Color color, IconData icon) {
@@ -211,7 +311,16 @@ class _AttendanceHistoryViewState extends State<AttendanceHistoryView> {
 
     void flush() {
       if (group.isEmpty) return;
-      widgets.add(Reveal(order: order++, child: DtrTable(days: List.of(group))));
+      widgets.add(
+        Reveal(
+          order: order++,
+          child: DtrTable(
+            days: List.of(group),
+            photoDates: _photoDates,
+            onViewPhoto: widget.loadPhoto == null ? null : _openPhoto,
+          ),
+        ),
+      );
       group = <DtrDay>[];
     }
 

@@ -47,11 +47,32 @@ const fullName = (row) =>
     .filter(Boolean)
     .join(' ');
 
+// The teacher's department (the teacher is the department head). A teacher
+// sees only the students of the courses of this department.
+const teacherDepartment = async (userId) => {
+  const result = await pool.query(
+    `SELECT t.department_id, d.department_name
+     FROM teachers t
+     LEFT JOIN departments d ON d.id = t.department_id
+     WHERE t.user_id = $1`,
+    [userId]
+  );
+  const row = result.rows[0];
+  return row && row.department_id ? row : null;
+};
+
+const NO_DEPARTMENT_MESSAGE =
+  'Your account has no department yet. Ask the administrator to set your department.';
+
 // GET /api/teacher/filters
 // The courses and year levels that have students, to fill the two pickers.
 const getStudentFilters = async (req, res) => {
   try {
     if (!requireTeacher(req, res)) return;
+    const department = await teacherDepartment(req.user.userId);
+    if (!department) {
+      return res.json({ department: null, courses: [], message: NO_DEPARTMENT_MESSAGE });
+    }
     const result = await pool.query(
       `
       SELECT
@@ -59,12 +80,13 @@ const getStudentFilters = async (req, res) => {
         MAX(c.course_name) AS course_name,
         BTRIM(s.year_level) AS year_level
       FROM students s
-      LEFT JOIN courses c ON UPPER(c.course_code) = UPPER(BTRIM(s.course))
-      WHERE s.course IS NOT NULL AND BTRIM(s.course) <> ''
+      JOIN courses c ON UPPER(c.course_code) = UPPER(BTRIM(s.course))
+      WHERE c.department_id = $1::uuid
         AND s.year_level IS NOT NULL AND BTRIM(s.year_level) <> ''
       GROUP BY UPPER(BTRIM(s.course)), BTRIM(s.year_level)
       ORDER BY UPPER(BTRIM(s.course)), BTRIM(s.year_level)
-      `
+      `,
+      [department.department_id]
     );
 
     const courses = new Map();
@@ -78,7 +100,13 @@ const getStudentFilters = async (req, res) => {
       }
       courses.get(row.course_code).year_levels.push(row.year_level);
     }
-    return res.json({ courses: [...courses.values()] });
+    return res.json({
+      department: {
+        id: department.department_id,
+        name: department.department_name
+      },
+      courses: [...courses.values()]
+    });
   } catch (error) {
     console.error('Teacher filters error:', error);
     return res.status(500).json({ message: 'Could not load the course list.' });
@@ -99,6 +127,22 @@ const getStudentsDtr = async (req, res) => {
     const range = monthRange(month);
     if (!range) {
       return res.status(400).json({ message: 'The month must look like 2026-11.' });
+    }
+
+    // Only a course of the teacher's own department.
+    const department = await teacherDepartment(req.user.userId);
+    if (!department) {
+      return res.status(403).json({ message: NO_DEPARTMENT_MESSAGE });
+    }
+    const allowed = await pool.query(
+      `SELECT 1 FROM courses
+       WHERE UPPER(course_code) = UPPER($1) AND department_id = $2::uuid`,
+      [course, department.department_id]
+    );
+    if (allowed.rowCount === 0) {
+      return res.status(403).json({
+        message: 'You can see only the courses of your department.'
+      });
     }
 
     const result = await pool.query(

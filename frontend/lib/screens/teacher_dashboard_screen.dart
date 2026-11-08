@@ -60,6 +60,10 @@ class _TeacherDashboardScreenState extends State<TeacherDashboardScreen> {
 
   // [{course_code, course_name, year_levels: [..]}]
   List<Map<String, dynamic>> _courses = [];
+
+  /// The teacher's department; empty until the administrator sets it.
+  String _department = '';
+  bool _hasDepartment = true;
   String? _course;
   String? _yearLevel;
   late DateTime _month = _firstOfThisMonth();
@@ -132,6 +136,8 @@ class _TeacherDashboardScreenState extends State<TeacherDashboardScreen> {
       ];
       setState(() {
         _courses = courses;
+        _hasDepartment = result['department'] != null;
+        _department = (result['department']?['name'] ?? '').toString();
         _isLoadingFilters = false;
         final stillThere = courses.any((c) => c['course_code'] == _course);
         if (!stillThere) {
@@ -315,10 +321,16 @@ class _TeacherDashboardScreenState extends State<TeacherDashboardScreen> {
   }
 
   Widget _studentPanel(ThemeData theme, Map<String, dynamic> student) {
-    final days = [
+    final recorded = [
       for (final item in (student['days'] as List<dynamic>? ?? []))
         DtrDay.fromJson(Map<String, dynamic>.from(item as Map)),
-    ].reversed.toList();
+    ];
+    // Every date of the month up to today, newest first, like a paper DTR.
+    final days = fillCalendar(
+      recorded,
+      from: _month,
+      to: DateTime(_month.year, _month.month + 1, 0),
+    ).reversed.toList();
     final onCampus = (student['days_on_campus'] as num?)?.toInt() ?? 0;
     final minutes = (student['total_minutes'] as num?)?.toInt() ?? 0;
     final number = student['student_number']?.toString() ?? '';
@@ -361,7 +373,7 @@ class _TeacherDashboardScreenState extends State<TeacherDashboardScreen> {
               ),
             ),
             children: [
-              if (days.isEmpty)
+              if (recorded.isEmpty)
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: AppSpace.sm),
                   child: Text(
@@ -396,6 +408,18 @@ class _TeacherDashboardScreenState extends State<TeacherDashboardScreen> {
             const Expanded(child: Text('Could not load the course list.')),
             TextButton(onPressed: _loadFilters, child: const Text('Retry')),
           ],
+        ),
+      );
+    }
+    if (!_hasDepartment) {
+      return const AppPanel(
+        padding: EdgeInsets.symmetric(vertical: AppSpace.lg),
+        child: EmptyState(
+          icon: Icons.apartment_outlined,
+          title: 'No department yet',
+          message:
+              'Your account has no department yet. Ask the administrator to '
+              'set your department.',
         ),
       );
     }
@@ -481,7 +505,9 @@ class _TeacherDashboardScreenState extends State<TeacherDashboardScreen> {
                   order: 0,
                   child: BrandBand(
                     greeting: _greeting,
-                    subtitle: 'The daily time record of your students',
+                    subtitle: _department.isEmpty
+                        ? 'The daily time record of your students'
+                        : 'The daily time record of the $_department',
                     name: _displayName,
                     photo: ProfileState.instance.photo,
                   ),

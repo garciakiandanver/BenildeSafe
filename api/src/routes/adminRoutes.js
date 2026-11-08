@@ -24,7 +24,8 @@ const {
 } = require('../controllers/adminController');
 const {
   getPhotosForDate,
-  getPhoto
+  getPhoto,
+  getUserPhotoDates
 } = require('../controllers/photoVerificationController');
 
 // Self-registration was removed. Accounts are created by the school: students
@@ -57,6 +58,7 @@ router.put('/users/:userId', authenticateToken, requireAdmin, updateManagedUser)
 router.patch('/users/:userId/status', authenticateToken, requireAdmin, setManagedUserStatus);
 router.delete('/users/:userId/device', authenticateToken, requireAdmin, resetStudentDevice);
 router.get('/photos', authenticateToken, requireAdmin, getPhotosForDate);
+router.get('/photos/user/:userId', authenticateToken, requireAdmin, getUserPhotoDates);
 router.get('/photos/:userId/:date', authenticateToken, requireAdmin, getPhoto);
 router.get('/campuses', authenticateToken, getCampuses);
 router.post('/campuses', authenticateToken, requireAdmin, addCampus);

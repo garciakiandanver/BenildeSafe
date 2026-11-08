@@ -14,7 +14,18 @@ class DtrTable extends StatefulWidget {
   /// The days to show, in the order they should appear.
   final List<DtrDay> days;
 
-  const DtrTable({super.key, required this.days});
+  /// Dates ("2026-11-06") verified with a photo; they get a photo icon.
+  final Set<String> photoDates;
+
+  /// Opens the photo of a date. Without it the icon is shown but not tappable.
+  final void Function(String date)? onViewPhoto;
+
+  const DtrTable({
+    super.key,
+    required this.days,
+    this.photoDates = const {},
+    this.onViewPhoto,
+  });
 
   @override
   State<DtrTable> createState() => _DtrTableState();
@@ -24,6 +35,60 @@ class _DtrTableState extends State<DtrTable> {
   static const _weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
   final Set<String> _open = {};
+
+  /// The Photo column is shown only where the photo may be opened: the
+  /// student's own history and the administrator's report.
+  bool get _showPhotos => widget.onViewPhoto != null;
+
+  /// Width below which the table scrolls sideways instead of squeezing the
+  /// columns, so the hours stay readable on a phone.
+  static const double _minWidth = 560;
+
+  Widget _photoStatus(DtrDay day, bool verified, bool empty) {
+    final theme = Theme.of(context);
+    if (empty || day.absent) {
+      return Text(
+        '—',
+        style: theme.textTheme.bodyMedium?.copyWith(
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
+      );
+    }
+    if (!verified) {
+      return Text(
+        'Unverified',
+        style: theme.textTheme.bodySmall?.copyWith(
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
+      );
+    }
+    return InkWell(
+      borderRadius: BorderRadius.circular(6),
+      onTap: () => widget.onViewPhoto!(day.date),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.verified_rounded,
+              size: 16,
+              color: theme.colorScheme.primary,
+            ),
+            const SizedBox(width: 4),
+            Text(
+              'View',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.primary,
+                fontWeight: FontWeight.w700,
+                decoration: TextDecoration.underline,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   Widget _cell(
     String text, {
@@ -59,6 +124,7 @@ class _DtrTableState extends State<DtrTable> {
           _cell('Date', flex: 3, style: style),
           _cell('Time in', flex: 3, style: style),
           _cell('Time out', flex: 3, style: style),
+          if (_showPhotos) _cell('Photo', flex: 3, style: style),
           _cell('Hours', flex: 3, style: style, align: TextAlign.right),
         ],
       ),
@@ -76,6 +142,8 @@ class _DtrTableState extends State<DtrTable> {
       fontWeight: FontWeight.w700,
       fontFeatures: const [FontFeature.tabularFigures()],
     );
+    final empty = !day.hasRecord;
+    final verified = widget.photoDates.contains(day.date);
     final visits = day.sessions.length;
     final expandable = visits > 1 || day.hasRemarks;
     final expanded = _open.contains(day.date);
@@ -87,6 +155,10 @@ class _DtrTableState extends State<DtrTable> {
         : day.lastOut == null
         ? '—'
         : ManilaTime.clock(day.lastOut!);
+
+    final rowStyle = empty
+        ? strong?.copyWith(color: muted, fontWeight: FontWeight.w500)
+        : strong;
 
     final summary = Padding(
       padding: const EdgeInsets.symmetric(
@@ -104,7 +176,7 @@ class _DtrTableState extends State<DtrTable> {
                     label,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: strong,
+                    style: rowStyle,
                   ),
                 ),
                 if (day.hasRemarks) ...[
@@ -127,22 +199,30 @@ class _DtrTableState extends State<DtrTable> {
           _cell(
             day.firstIn == null ? '—' : ManilaTime.clock(day.firstIn!),
             flex: 3,
-            style: strong,
+            style: rowStyle,
           ),
           _cell(
             timeOut,
             flex: 3,
-            style: strong?.copyWith(
-              color: day.stillInside || day.absent ? muted : null,
-              fontWeight: day.stillInside || day.absent
+            style: rowStyle?.copyWith(
+              color: day.stillInside || day.absent || empty ? muted : null,
+              fontWeight: day.stillInside || day.absent || empty
                   ? FontWeight.w500
                   : FontWeight.w700,
             ),
           ),
+          if (_showPhotos)
+            Expanded(
+              flex: 3,
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: _photoStatus(day, verified, empty),
+              ),
+            ),
           _cell(
             day.absent ? '—' : formatDuration(day.minutes),
             flex: 3,
-            style: strong,
+            style: rowStyle,
             align: TextAlign.right,
           ),
         ],
@@ -204,15 +284,26 @@ class _DtrTableState extends State<DtrTable> {
 
   @override
   Widget build(BuildContext context) {
+    final table = Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _header(),
+        Divider(height: 1, color: Theme.of(context).dividerColor),
+        for (final day in widget.days) _row(day),
+      ],
+    );
     return AppPanel(
       padding: EdgeInsets.zero,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _header(),
-          Divider(height: 1, color: Theme.of(context).dividerColor),
-          for (final day in widget.days) _row(day),
-        ],
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          // With the Photo column a phone is too narrow for five columns:
+          // keep them readable and let the table be swiped left and right.
+          if (!_showPhotos || constraints.maxWidth >= _minWidth) return table;
+          return SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: SizedBox(width: _minWidth, child: table),
+          );
+        },
       ),
     );
   }

@@ -484,8 +484,10 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
         level = StatusLevel.neutral;
         break;
       case 'timed_out':
-        label = 'Auto timed out';
-        detail = 'Did not time out, so the system closed the day for them.';
+        label = 'Left campus';
+        detail = campus.isNotEmpty
+            ? 'Left $campus and was timed out automatically.'
+            : 'Left the campus and was timed out automatically.';
         level = StatusLevel.caution;
         break;
       case 'none':

@@ -380,7 +380,7 @@ class _AttendanceTrendChartState extends State<AttendanceTrendChart> {
         ? ''
         : '${_dayLabel(date)}${isToday ? ' (today)' : ''}\n'
               '${day.students} ${day.students == 1 ? 'student' : 'students'}'
-              '${_share(day.students)}  ·  ${day.lateCount} late';
+              '${_share(day.students)}';
 
     return Tooltip(
       message: tooltip,
@@ -521,6 +521,8 @@ class _Day {
     // "2026-11-02", a Manila date as text.
     date: ManilaTime.parse(json['date']),
     students: (json['students'] as num?)?.toInt() ?? 0,
-    lateCount: (json['late'] as num?)?.toInt() ?? 0,
+    // The late status was removed with the class schedule, so old "late"
+    // records are drawn as ordinary time ins (one colour, no late part).
+    lateCount: 0,
   );
 }

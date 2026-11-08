@@ -30,6 +30,9 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
 
   List<dynamic> _students = [];
   List<dynamic> _teachers = [];
+
+  /// Departments, for the department of a teacher (the department head).
+  List<Map<String, dynamic>> _departments = [];
   List<dynamic> _parents = [];
 
   final _searchController = TextEditingController();
@@ -115,8 +118,20 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
       final teachers = await ApiService.getAdminTeachers(token: widget.token);
       final parents = await ApiService.getAdminParents(token: widget.token);
 
+      var departments = <Map<String, dynamic>>[];
+      try {
+        final result = await ApiService.getDepartments(token: widget.token);
+        departments = [
+          for (final item in (result['departments'] as List<dynamic>? ?? []))
+            Map<String, dynamic>.from(item as Map),
+        ];
+      } catch (_) {
+        // Users still load; only the department picker stays empty.
+      }
+
       if (!mounted) return;
       setState(() {
+        _departments = departments;
         _students = students['students'] ?? [];
         _teachers = teachers['teachers'] ?? [];
         _parents = parents['parents'] ?? [];
@@ -130,6 +145,42 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
         _isLoading = false;
       });
     }
+  }
+
+  /// The department picker of a teacher. A teacher (the department head) sees
+  /// only the students of the courses of this department.
+  /// The department of a teacher. Optional: the department head of a
+  /// department has one and sees only its students; any other teacher has
+  /// none and sees no students.
+  /// The department of a teacher. Teacher accounts are given only to the
+  /// department head, who sees only the students of this department.
+  Widget _departmentField({
+    required String? value,
+    required ValueChanged<String?> onChanged,
+  }) {
+    final ids = {for (final d in _departments) d['id'].toString()};
+    return DropdownButtonFormField<String>(
+      initialValue: ids.contains(value) ? value : null,
+      isExpanded: true,
+      decoration: const InputDecoration(
+        labelText: 'Department',
+        helperText: 'The teacher (department head) sees only its students.',
+        helperMaxLines: 2,
+      ),
+      items: [
+        for (final d in _departments)
+          DropdownMenuItem(
+            value: d['id'].toString(),
+            child: Text(
+              (d['department_name'] ?? d['department_code'] ?? '').toString(),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+      ],
+      onChanged: onChanged,
+      validator: (chosen) =>
+          chosen == null || chosen.isEmpty ? 'Choose the department.' : null,
+    );
   }
 
   Future<void> _editUser(Map<String, dynamic> user, String role) async {
@@ -154,6 +205,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
         ),
     };
     final formKey = GlobalKey<FormState>();
+    String? departmentId = user['department_id']?.toString();
     try {
       final values = await showDialog<Map<String, dynamic>>(
         context: context,
@@ -166,7 +218,8 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
               child: SingleChildScrollView(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
-                  children: fields.map((field) {
+                  children: [
+                    ...fields.map((field) {
                     return Padding(
                       padding: const EdgeInsets.only(bottom: 8),
                       child: TextFormField(
@@ -190,7 +243,13 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
                         },
                       ),
                     );
-                  }).toList(),
+                  }),
+                    if (role == 'Teacher')
+                      _departmentField(
+                        value: departmentId,
+                        onChanged: (chosen) => departmentId = chosen,
+                      ),
+                  ],
                 ),
               ),
             ),
@@ -206,6 +265,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
                 Navigator.pop(dialogContext, {
                   for (final field in fields)
                     field.key: controllers[field.key]!.text.trim(),
+                  if (role == 'Teacher') 'department_id': departmentId ?? '',
                 });
               },
               child: const Text('Save'),
@@ -248,6 +308,14 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
   // registrar's master list through the bulk import, and nobody can create an
   // account for themselves any more.
   Future<void> _addTeacher() async {
+    if (_departments.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Add a department first (Courses > Departments).'),
+        ),
+      );
+      return;
+    }
     final fields = <({String key, String label, bool required})>[
       (key: 'first_name', label: 'First name', required: true),
       (key: 'middle_name', label: 'Middle name', required: false),
@@ -259,6 +327,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
       for (final field in fields) field.key: TextEditingController(),
     };
     final formKey = GlobalKey<FormState>();
+    String? departmentId;
     try {
       final values = await showDialog<Map<String, String>>(
         context: context,
@@ -298,8 +367,13 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
                         ),
                       ),
                     ),
+                    _departmentField(
+                      value: departmentId,
+                      onChanged: (chosen) => departmentId = chosen,
+                    ),
                     const SizedBox(height: 4),
                     const Text(
+                      'Teacher accounts are for department heads. '
                       'The teacher receives an email with a temporary password '
                       'and is asked to set their own password the first time '
                       'they sign in.',
@@ -321,6 +395,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
                 Navigator.pop(dialogContext, {
                   for (final field in fields)
                     field.key: controllers[field.key]!.text.trim(),
+                  'department_id': departmentId ?? '',
                 });
               },
               child: const Text('Add teacher'),
@@ -337,6 +412,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
         lastName: values['last_name']!,
         email: values['email']!,
         employeeNumber: values['employee_number']!,
+        departmentId: values['department_id']!,
       );
       await _loadAll();
       if (!mounted) return;
@@ -1167,6 +1243,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
                       lines: [
                         t['employee_number']?.toString() ?? '',
                         t['email']?.toString() ?? '',
+                        (t['department_name'] ?? 'No department yet').toString(),
                       ],
                     );
                   },

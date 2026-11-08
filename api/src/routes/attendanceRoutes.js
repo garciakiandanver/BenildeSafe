@@ -11,7 +11,9 @@ const {
 const {
   getTodayPhotoStatus,
   startPhoto,
-  submitPhoto
+  submitPhoto,
+  getMyPhotoDates,
+  getMyPhoto
 } = require('../controllers/photoVerificationController');
 
 const authMiddleware = require('../middleware/authMiddleware');
@@ -27,5 +29,7 @@ router.get('/history', authMiddleware, getAttendanceHistory);
 router.get('/photo/today', authMiddleware, getTodayPhotoStatus);
 router.post('/photo/start', authMiddleware, startPhoto);
 router.post('/photo', authMiddleware, submitPhoto);
+router.get('/photos', authMiddleware, getMyPhotoDates);
+router.get('/photos/:date', authMiddleware, getMyPhoto);
 
 module.exports = router;

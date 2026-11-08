@@ -212,8 +212,51 @@ const getPhotosForDate = async (req, res) => {
   }
 };
 
+const photoDatesOf = async (userId) => {
+  const result = await pool.query(
+    `SELECT to_char(photo_date, 'YYYY-MM-DD') AS date
+     FROM daily_photos
+     WHERE user_id = $1::uuid
+     ORDER BY photo_date`,
+    [userId]
+  );
+  return result.rows.map((row) => row.date);
+};
+
+// GET /api/attendance/photos          (student) the student's own verified dates
+const getMyPhotoDates = async (req, res) => {
+  if (gps.notAnAttendanceRole(req)) {
+    return res.status(403).json({ message: gps.ATTENDANCE_ROLE_MESSAGE });
+  }
+  try {
+    return res.json({ dates: await photoDatesOf(req.user.userId) });
+  } catch (error) {
+    console.error('Photo dates error:', error);
+    return res.status(500).json({ message: 'Could not load the verified days.' });
+  }
+};
+
+// GET /api/admin/photos/user/:userId  (admin) one student's verified dates
+const getUserPhotoDates = async (req, res) => {
+  try {
+    return res.json({ dates: await photoDatesOf(String(req.params.userId ?? '')) });
+  } catch (error) {
+    console.error('Admin photo dates error:', error);
+    return res.status(500).json({ message: 'Could not load the verified days.' });
+  }
+};
+
+// GET /api/attendance/photos/:date    (student) the student's own photo
+const getMyPhoto = async (req, res) => {
+  if (gps.notAnAttendanceRole(req)) {
+    return res.status(403).json({ message: gps.ATTENDANCE_ROLE_MESSAGE });
+  }
+  req.params.userId = req.user.userId;
+  return getPhoto(req, res);
+};
+
 // GET /api/admin/photos/:userId/:date   (admin) one photo
-const getPhoto = async (req, res) => {
+async function getPhoto(req, res) {
   const date = validDate(req.params.date);
   if (!date) return res.status(400).json({ message: 'A date (YYYY-MM-DD) is required.' });
   try {
@@ -243,7 +286,8 @@ const getPhoto = async (req, res) => {
     console.error('Admin photo error:', error);
     return res.status(500).json({ message: 'Could not load the photo.' });
   }
-};
+}
+
 
 module.exports = {
   getTodayPhotoStatus,
@@ -251,5 +295,8 @@ module.exports = {
   submitPhoto,
   getPhotosForDate,
   getPhoto,
+  getMyPhotoDates,
+  getMyPhoto,
+  getUserPhotoDates,
   _test: { decodePhoto }
 };

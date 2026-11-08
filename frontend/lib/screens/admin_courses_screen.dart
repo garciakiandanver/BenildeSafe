@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../services/api_service.dart';
 import '../widgets/app_ui.dart';
+import 'admin_course_students_screen.dart';
 import 'admin_departments_screen.dart';
 
 /// Admin: manage the courses (add, edit, delete). A course must exist before the
@@ -23,6 +24,9 @@ class _AdminCoursesScreenState extends State<AdminCoursesScreen> {
   List<Map<String, dynamic>> _courses = [];
   List<Map<String, dynamic>> _departments = [];
 
+  /// Students by course code (upper case), for the counts and the list.
+  Map<String, List<Map<String, dynamic>>> _studentsByCourse = {};
+
   @override
   void initState() {
     super.initState();
@@ -33,8 +37,20 @@ class _AdminCoursesScreenState extends State<AdminCoursesScreen> {
     try {
       final courses = await ApiService.getCourses(token: widget.token);
       final departments = await ApiService.getDepartments(token: widget.token);
+      final byCourse = <String, List<Map<String, dynamic>>>{};
+      try {
+        final students = await ApiService.getAdminStudents(token: widget.token);
+        for (final item in (students['students'] as List<dynamic>? ?? [])) {
+          final student = Map<String, dynamic>.from(item as Map);
+          final key = (student['course'] ?? '').toString().trim().toUpperCase();
+          byCourse.putIfAbsent(key, () => []).add(student);
+        }
+      } catch (_) {
+        // The courses still show without the student counts.
+      }
       if (!mounted) return;
       setState(() {
+        _studentsByCourse = byCourse;
         _courses = (courses['courses'] as List<dynamic>? ?? [])
             .map((item) => Map<String, dynamic>.from(item as Map))
             .toList();
@@ -208,6 +224,8 @@ class _AdminCoursesScreenState extends State<AdminCoursesScreen> {
         itemBuilder: (context, index) {
           final course = _courses[index];
           final department = course['department_name']?.toString() ?? '';
+          final code = course['course_code']?.toString() ?? '';
+          final students = _studentsByCourse[code.trim().toUpperCase()] ?? [];
           return AppCard(
             index: index,
             child: ListTile(
@@ -215,9 +233,21 @@ class _AdminCoursesScreenState extends State<AdminCoursesScreen> {
               title: Text(course['course_name']?.toString() ?? ''),
               subtitle: Text(
                 [
-                  course['course_code']?.toString() ?? '',
+                  code,
                   if (department.isNotEmpty) department,
+                  '${students.length} ${students.length == 1 ? 'student' : 'students'}',
                 ].join(' • '),
+              ),
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => AdminCourseStudentsScreen(
+                    token: widget.token,
+                    courseCode: code,
+                    courseName: course['course_name']?.toString() ?? '',
+                    students: students,
+                  ),
+                ),
               ),
               trailing: PopupMenuButton<String>(
                 tooltip: 'Course options',

@@ -115,6 +115,55 @@ class _PhotoVerifyCardState extends State<PhotoVerifyCard> {
     }
   }
 
+  String _todayKey() {
+    final now = ManilaTime.now();
+    return '${now.year.toString().padLeft(4, '0')}-'
+        '${now.month.toString().padLeft(2, '0')}-'
+        '${now.day.toString().padLeft(2, '0')}';
+  }
+
+  void _viewPhoto() {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Your verification photo'),
+        content: FutureBuilder<Map<String, dynamic>>(
+          future: ApiService.getMyPhoto(token: widget.token, date: _todayKey()),
+          builder: (context, snapshot) {
+            if (snapshot.connectionState != ConnectionState.done) {
+              return const SizedBox(
+                height: 120,
+                child: Center(child: CircularProgressIndicator()),
+              );
+            }
+            if (snapshot.hasError) {
+              return Text(
+                snapshot.error.toString().replaceFirst('Exception: ', ''),
+              );
+            }
+            final photo = snapshot.data?['photo']?.toString();
+            if (photo == null || !photo.contains(',')) {
+              return const Text('The photo is not available.');
+            }
+            return ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: Image.memory(
+                base64Decode(photo.split(',').last),
+                fit: BoxFit.contain,
+              ),
+            );
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loading) return const SizedBox.shrink();
@@ -135,6 +184,7 @@ class _PhotoVerifyCardState extends State<PhotoVerifyCard> {
               ),
             ),
           ),
+          TextButton(onPressed: _viewPhoto, child: const Text('View')),
         ],
       );
     } else {

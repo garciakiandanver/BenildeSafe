@@ -31,6 +31,8 @@ class AttendanceHistoryScreen extends StatelessWidget {
           final result = await ApiService.getAttendanceHistory(token: token);
           return result['attendance'] as List<dynamic>? ?? [];
         },
+        loadPhotoDates: () => ApiService.getMyPhotoDates(token: token),
+        loadPhoto: (date) => ApiService.getMyPhoto(token: token, date: date),
       ),
     );
   }

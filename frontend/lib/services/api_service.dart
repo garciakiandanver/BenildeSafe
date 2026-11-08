@@ -306,6 +306,7 @@ class ApiService {
     required String lastName,
     required String email,
     required String employeeNumber,
+    required String departmentId,
   }) async {
     final response = await http.post(
       Uri.parse('$baseUrl/admin/teachers'),
@@ -316,6 +317,7 @@ class ApiService {
         'last_name': lastName,
         'email': email,
         'employee_number': employeeNumber,
+        'department_id': departmentId,
       }),
     );
     return _handleResponse(response);
@@ -465,6 +467,29 @@ class ApiService {
     return _handleResponse(response);
   }
 
+  static Future<Set<String>> getMyPhotoDates({required String token}) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/attendance/photos'),
+      headers: _authenticatedJsonHeaders(token),
+    );
+    final result = _handleResponse(response);
+    return {
+      for (final date in (result['dates'] as List<dynamic>? ?? []))
+        date.toString(),
+    };
+  }
+
+  static Future<Map<String, dynamic>> getMyPhoto({
+    required String token,
+    required String date,
+  }) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/attendance/photos/$date'),
+      headers: _authenticatedJsonHeaders(token),
+    );
+    return _handleResponse(response);
+  }
+
   // ---- Verification photos (administrator) ----
 
   static Future<Map<String, dynamic>> getAdminPhotos({
@@ -476,6 +501,21 @@ class ApiService {
       headers: _authenticatedJsonHeaders(token),
     );
     return _handleResponse(response);
+  }
+
+  static Future<Set<String>> getAdminUserPhotoDates({
+    required String token,
+    required String userId,
+  }) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/admin/photos/user/$userId'),
+      headers: _authenticatedJsonHeaders(token),
+    );
+    final result = _handleResponse(response);
+    return {
+      for (final date in (result['dates'] as List<dynamic>? ?? []))
+        date.toString(),
+    };
   }
 
   static Future<Map<String, dynamic>> getAdminPhoto({
